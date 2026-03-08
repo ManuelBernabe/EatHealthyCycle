@@ -183,7 +183,16 @@ public class PdfImportService : IPdfImportService
                 .ToList();
 
             // Define column boundaries for each day
+            // Strategy: use INGREDIENTES headers to define left boundary,
+            // and midpoint between consecutive INGREDIENTES headers (or next DIA's INGESTA) for right boundary.
             dayColumns = new List<(int diaNum, double contentLeft, double contentRight)>();
+
+            // Find INGESTA column headers (meal type labels column)
+            var ingestaHeaders = allWords
+                .Where(w => CleanText(w.Text).Equals("INGESTA", StringComparison.OrdinalIgnoreCase))
+                .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
+                .OrderBy(w => w.xLeft)
+                .ToList();
 
             for (int i = 0; i < diaHeaders.Count; i++)
             {
@@ -197,10 +206,24 @@ public class PdfImportService : IPdfImportService
 
                 if (closestIngr != null)
                 {
-                    contentLeft = closestIngr.xLeft - 20;
-                    contentRight = i + 1 < diaHeaders.Count
-                        ? diaHeaders[i + 1].xLeft - 30
-                        : page.Width;
+                    contentLeft = closestIngr.xLeft - 30;
+
+                    // Right boundary: use the INGESTA header of the NEXT day column if available,
+                    // otherwise use midpoint between current and next DIA headers, otherwise page width
+                    if (i + 1 < diaHeaders.Count)
+                    {
+                        var nextIngesta = ingestaHeaders
+                            .Where(ig => ig.xCenter > closestIngr.xCenter + 50)
+                            .OrderBy(ig => ig.xLeft)
+                            .FirstOrDefault();
+                        contentRight = nextIngesta != null
+                            ? nextIngesta.xLeft - 5
+                            : (dia.xCenter + diaHeaders[i + 1].xCenter) / 2;
+                    }
+                    else
+                    {
+                        contentRight = page.Width;
+                    }
                 }
                 else
                 {
@@ -211,6 +234,8 @@ public class PdfImportService : IPdfImportService
                 }
 
                 dayColumns.Add((dia.diaNum, contentLeft, contentRight));
+                logger.LogInformation("Page {Page}: DIA {Dia} column bounds: left={Left:F0}, right={Right:F0}",
+                    page.Number, dia.diaNum, contentLeft, contentRight);
             }
         }
         else if (previousColumns != null)
@@ -348,6 +373,13 @@ public class PdfImportService : IPdfImportService
                     .ToList();
 
                 if (cellWords.Count == 0) continue;
+
+                logger.LogInformation("Page {Page}: DIA {Dia} {Meal}: {Count} words in cell, raw: [{Words}]",
+                    page.Number, col.diaNum, row.tipo, cellWords.Count,
+                    string.Join(", ", cellWords.OrderByDescending(w => w.BoundingBox.Bottom)
+                        .ThenBy(w => w.BoundingBox.Left)
+                        .Take(20)
+                        .Select(w => CleanText(w.Text))));
 
                 // Extract food items using bullet-aware merging
                 var foodItems = ExtractFoodItemsFromCell(cellWords);
@@ -614,7 +646,7 @@ public class PdfImportService : IPdfImportService
             {
                 for (int j = i + 1; j < Math.Min(i + 6, words.Count); j++)
                 {
-                    if (Math.Abs(words[j].BoundingBox.Bottom - w.BoundingBox.Bottom) > 25)
+                    if (Math.Abs(words[j].BoundingBox.Bottom - w.BoundingBox.Bottom) > 50)
                         continue;
                     var cleanJ = CleanText(words[j].Text);
                     if (Regex.IsMatch(cleanJ, @"^DESAYUNO$", RegexOptions.IgnoreCase))
