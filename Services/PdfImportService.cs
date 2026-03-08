@@ -56,10 +56,14 @@ public class PdfImportService : IPdfImportService
         _logger.LogInformation("PDF has {Pages} pages", allPages.Count);
 
         // Process table pages (columns with DIA headers)
+        // Track last known column layout for continuation pages (pages without DIA headers)
+        // Track orphaned words at the bottom of primary pages (belong to next page's first meal)
         var diasFromTables = new Dictionary<int, DietaDia>();
+        List<(int diaNum, double contentLeft, double contentRight)>? lastColumns = null;
+        Dictionary<int, List<Word>>? orphanedWords = null;
         foreach (var page in allPages)
         {
-            ProcessTablePage(page, diasFromTables, _logger);
+            (lastColumns, orphanedWords) = ProcessTablePage(page, diasFromTables, lastColumns, orphanedWords, _logger);
         }
 
         foreach (var kvp in diasFromTables.OrderBy(k => k.Key))
@@ -126,58 +130,82 @@ public class PdfImportService : IPdfImportService
 
     // ==================== TABLE PAGE PROCESSING ====================
 
-    private static void ProcessTablePage(Page page, Dictionary<int, DietaDia> dias, ILogger logger)
+    /// <summary>
+    /// Process a table page. Returns column layout and any orphaned words at page bottom.
+    /// </summary>
+    private static (
+        List<(int diaNum, double contentLeft, double contentRight)>? columns,
+        Dictionary<int, List<Word>>? orphans
+    ) ProcessTablePage(
+        Page page,
+        Dictionary<int, DietaDia> dias,
+        List<(int diaNum, double contentLeft, double contentRight)>? previousColumns,
+        Dictionary<int, List<Word>>? previousOrphans,
+        ILogger logger)
     {
         var allWords = page.GetWords().ToList();
-        if (allWords.Count == 0) return;
-
-        // Use all words (including bullets) for structure detection
-        // Filter bullets only when building food item text
+        if (allWords.Count == 0) return (previousColumns, null);
 
         // Step 1: Find DIA headers
         var diaHeaders = FindDiaHeaders(allWords);
-        if (diaHeaders.Count == 0) return;
 
-        logger.LogInformation("Page {Page}: Found {Count} DIA headers: {Headers}",
-            page.Number, diaHeaders.Count,
-            string.Join(", ", diaHeaders.Select(h => $"DIA {h.diaNum} at X={h.xCenter:F0}")));
+        List<(int diaNum, double contentLeft, double contentRight)> dayColumns;
 
-        // Step 2: Find INGREDIENTES column headers
-        var ingredientesHeaders = allWords
-            .Where(w => CleanText(w.Text).Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
-            .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
-            .OrderBy(w => w.xLeft)
-            .ToList();
-
-        // Step 3: Define column boundaries for each day
-        var dayColumns = new List<(int diaNum, double contentLeft, double contentRight)>();
-
-        for (int i = 0; i < diaHeaders.Count; i++)
+        if (diaHeaders.Count > 0)
         {
-            var dia = diaHeaders[i];
-            var closestIngr = ingredientesHeaders
-                .Where(ig => Math.Abs(ig.xCenter - dia.xCenter) < 200)
-                .OrderBy(ig => Math.Abs(ig.xCenter - dia.xCenter))
-                .FirstOrDefault();
+            // This is a primary page with DIA headers
+            logger.LogInformation("Page {Page}: Found {Count} DIA headers: {Headers}",
+                page.Number, diaHeaders.Count,
+                string.Join(", ", diaHeaders.Select(h => $"DIA {h.diaNum} at X={h.xCenter:F0}")));
 
-            double contentLeft, contentRight;
+            // Find INGREDIENTES column headers
+            var ingredientesHeaders = allWords
+                .Where(w => CleanText(w.Text).Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
+                .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
+                .OrderBy(w => w.xLeft)
+                .ToList();
 
-            if (closestIngr != null)
+            // Define column boundaries for each day
+            dayColumns = new List<(int diaNum, double contentLeft, double contentRight)>();
+
+            for (int i = 0; i < diaHeaders.Count; i++)
             {
-                contentLeft = closestIngr.xLeft - 20;
-                contentRight = i + 1 < diaHeaders.Count
-                    ? diaHeaders[i + 1].xLeft - 30
-                    : page.Width;
-            }
-            else
-            {
-                var pageWidth = page.Width;
-                var colWidth = pageWidth / diaHeaders.Count;
-                contentLeft = dia.xCenter - colWidth / 4;
-                contentRight = dia.xCenter + colWidth / 2;
-            }
+                var dia = diaHeaders[i];
+                var closestIngr = ingredientesHeaders
+                    .Where(ig => Math.Abs(ig.xCenter - dia.xCenter) < 200)
+                    .OrderBy(ig => Math.Abs(ig.xCenter - dia.xCenter))
+                    .FirstOrDefault();
 
-            dayColumns.Add((dia.diaNum, contentLeft, contentRight));
+                double contentLeft, contentRight;
+
+                if (closestIngr != null)
+                {
+                    contentLeft = closestIngr.xLeft - 20;
+                    contentRight = i + 1 < diaHeaders.Count
+                        ? diaHeaders[i + 1].xLeft - 30
+                        : page.Width;
+                }
+                else
+                {
+                    var pageWidth = page.Width;
+                    var colWidth = pageWidth / diaHeaders.Count;
+                    contentLeft = dia.xCenter - colWidth / 4;
+                    contentRight = dia.xCenter + colWidth / 2;
+                }
+
+                dayColumns.Add((dia.diaNum, contentLeft, contentRight));
+            }
+        }
+        else if (previousColumns != null)
+        {
+            // Continuation page: no DIA headers, reuse previous column layout
+            logger.LogInformation("Page {Page}: No DIA headers, using previous column layout ({Count} columns)",
+                page.Number, previousColumns.Count);
+            dayColumns = previousColumns;
+        }
+        else
+        {
+            return (null, null); // No headers and no previous layout
         }
 
         // Step 4: Find all unique meal type labels with their Y positions
@@ -187,11 +215,21 @@ public class PdfImportService : IPdfImportService
             page.Number, mealLabels.Count,
             string.Join(", ", mealLabels.Select(m => $"{m.tipo} at Y={m.yCenter:F0}")));
 
-        if (mealLabels.Count == 0) return;
+        if (mealLabels.Count == 0) return (dayColumns, null);
 
         // Step 5: Define meal row boundaries
         var sortedMeals = mealLabels.OrderByDescending(m => m.yCenter).ToList();
         var mealRows = new List<(TipoComida tipo, double yTop, double yBottom)>();
+
+        // Calculate minimum spacing for bottom boundary heuristic
+        double minMealSpacing = 150;
+        if (sortedMeals.Count >= 2)
+        {
+            var spacings = new List<double>();
+            for (int s = 0; s < sortedMeals.Count - 1; s++)
+                spacings.Add(sortedMeals[s].yCenter - sortedMeals[s + 1].yCenter);
+            minMealSpacing = spacings.Min();
+        }
 
         for (int i = 0; i < sortedMeals.Count; i++)
         {
@@ -200,9 +238,68 @@ public class PdfImportService : IPdfImportService
                 : (sortedMeals[i].yCenter + sortedMeals[i - 1].yCenter) / 2;
             var yBottom = i + 1 < sortedMeals.Count
                 ? (sortedMeals[i].yCenter + sortedMeals[i + 1].yCenter) / 2
-                : 0;
+                : Math.Max(0, sortedMeals[i].yCenter - minMealSpacing * 1.5);
 
             mealRows.Add((sortedMeals[i].tipo, yTop, yBottom));
+        }
+
+        // On continuation pages, merge orphaned words from previous page into the first meal
+        if (previousOrphans != null && previousOrphans.Count > 0)
+        {
+            var firstMealRow = mealRows.First(); // Topmost meal on this page
+            logger.LogInformation("Page {Page}: Merging {Count} orphan groups into {Meal}",
+                page.Number, previousOrphans.Count, firstMealRow.tipo);
+
+            foreach (var col in dayColumns)
+            {
+                if (previousOrphans.TryGetValue(col.diaNum, out var orphanWords) && orphanWords.Count > 0)
+                {
+                    // Get words in this column's first meal cell
+                    var cellWords = allWords
+                        .Where(w =>
+                        {
+                            var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                            var wy = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                            return wx >= col.contentLeft && wx <= col.contentRight &&
+                                   wy >= firstMealRow.yBottom && wy <= firstMealRow.yTop;
+                        })
+                        .ToList();
+
+                    // Combine orphan words with cell words
+                    var combined = new List<Word>(orphanWords);
+                    combined.AddRange(cellWords);
+
+                    if (!dias.ContainsKey(col.diaNum))
+                    {
+                        dias[col.diaNum] = new DietaDia
+                        {
+                            DiaSemana = DiaNumeroMap.GetValueOrDefault(col.diaNum, (DayOfWeek)(col.diaNum % 7)),
+                            Nota = $"Día {col.diaNum}"
+                        };
+                    }
+
+                    var dia = dias[col.diaNum];
+                    var existingComida = dia.Comidas.FirstOrDefault(c => c.Tipo == firstMealRow.tipo);
+                    if (existingComida == null)
+                    {
+                        existingComida = new Comida { Tipo = firstMealRow.tipo, Orden = dia.Comidas.Count };
+                        dia.Comidas.Add(existingComida);
+                    }
+
+                    var foodItems = ExtractFoodItemsFromCell(combined);
+                    foreach (var foodText in foodItems)
+                    {
+                        var (nombre, cantidad) = ParseAlimento(foodText);
+                        nombre = CleanText(nombre).Trim();
+                        if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
+                        if (!existingComida.Alimentos.Any(a =>
+                            CleanText(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            existingComida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
+                        }
+                    }
+                }
+            }
         }
 
         // Step 6: For each day column x each meal row, extract food items
@@ -261,6 +358,82 @@ public class PdfImportService : IPdfImportService
                 }
             }
         }
+
+        // Detect orphaned content at the bottom of the page.
+        // Look for a significant Y gap (>40pt) in the last meal's cell content.
+        // Items below the gap belong to the first meal on the continuation page.
+        Dictionary<int, List<Word>>? newOrphans = null;
+        var lastMealRow = mealRows.Last();
+
+        foreach (var col in dayColumns)
+        {
+            var cellWords = allWords
+                .Where(w =>
+                {
+                    var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                    var wy = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                    return wx >= col.contentLeft && wx <= col.contentRight &&
+                           wy >= lastMealRow.yBottom && wy <= lastMealRow.yTop;
+                })
+                .Where(w => !IsBulletWord(w))
+                .OrderByDescending(w => w.BoundingBox.Bottom)
+                .ToList();
+
+            if (cellWords.Count < 2) continue;
+
+            // Find the largest Y gap between consecutive words
+            double maxGap = 0;
+            double gapBoundary = 0;
+            for (int g = 0; g < cellWords.Count - 1; g++)
+            {
+                var gap = cellWords[g].BoundingBox.Bottom - cellWords[g + 1].BoundingBox.Bottom;
+                if (gap > maxGap)
+                {
+                    maxGap = gap;
+                    gapBoundary = (cellWords[g].BoundingBox.Bottom + cellWords[g + 1].BoundingBox.Bottom) / 2;
+                }
+            }
+
+            if (maxGap > 40) // Significant gap found - items below belong to next page's first meal
+            {
+                var orphans = allWords
+                    .Where(w =>
+                    {
+                        var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                        var wy = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                        return wx >= col.contentLeft && wx <= col.contentRight &&
+                               wy < gapBoundary && wy > 0;
+                    })
+                    .ToList();
+
+                if (orphans.Count > 0)
+                {
+                    newOrphans ??= new Dictionary<int, List<Word>>();
+                    newOrphans[col.diaNum] = orphans;
+                    logger.LogInformation("Page {Page}: {Count} orphan words for DIA {Dia} (gap={Gap:F0}pt at Y={Boundary:F0})",
+                        page.Number, orphans.Count, col.diaNum, maxGap, gapBoundary);
+
+                    // Remove orphaned items from the last meal's comida
+                    if (dias.TryGetValue(col.diaNum, out var dia))
+                    {
+                        var lastComida = dia.Comidas.LastOrDefault();
+                        if (lastComida != null)
+                        {
+                            var orphanFoods = ExtractFoodItemsFromCell(orphans);
+                            foreach (var of in orphanFoods)
+                            {
+                                var cleanName = CleanText(ParseAlimento(of).nombre).Trim();
+                                var toRemove = lastComida.Alimentos
+                                    .FirstOrDefault(a => CleanText(a.Nombre).Equals(cleanName, StringComparison.OrdinalIgnoreCase));
+                                if (toRemove != null) lastComida.Alimentos.Remove(toRemove);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return (dayColumns, newOrphans);
     }
 
     /// <summary>

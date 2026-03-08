@@ -312,7 +312,14 @@ const App = {
 
     selectDay(index) {
         this.currentDayIndex = index;
-        if (this.currentPlan) this.renderPlan(this.currentPlan);
+        if (this.currentPlan) {
+            this.renderPlan(this.currentPlan);
+            // Scroll active tab into view on mobile
+            requestAnimationFrame(() => {
+                const activeTab = document.querySelector('.day-tab.active');
+                if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            });
+        }
     },
 
     async toggleMeal(id, el) {
