@@ -78,44 +78,68 @@ public class ImageImportService : IImageImportService
         }
     }
 
+    // Preprocessing strategies for ImageMagick
+    private static readonly string[] PreprocessStrategies =
+    {
+        // Strategy 1: High contrast to remove colored backgrounds (teal/beige table cells)
+        "-colorspace Gray -level 25%,75% -sharpen 0x1",
+        // Strategy 2: Binary threshold - pure black text on white background
+        "-colorspace Gray -level 30%,60% -threshold 50%",
+        // Strategy 3: Normalize + resize for low-res clean images
+        "-colorspace Gray -normalize -sharpen 0x1",
+    };
+
     private async Task<List<OcrWord>> RunTesseractAsync(string imagePath)
     {
         _logger.LogInformation("Running Tesseract on image: {Path} (size: {Size} bytes)",
             imagePath, new FileInfo(imagePath).Length);
 
-        // Try multiple PSM modes and languages until we get words
-        var attempts = new[]
+        // Try each preprocessing strategy with best PSM modes
+        foreach (var strategy in PreprocessStrategies)
         {
-            ("spa", "6"),   // PSM 6: assume single uniform block of text
-            ("spa", "3"),   // PSM 3: fully automatic page segmentation
-            ("spa", "4"),   // PSM 4: assume single column of variable-size text
-            ("eng", "6"),   // Fallback to English
-        };
-
-        foreach (var (lang, psm) in attempts)
-        {
-            var words = await TryTesseractAsync(imagePath, lang, psm);
-            if (words.Count > 0)
+            var preprocessed = await PreprocessImageAsync(imagePath, strategy);
+            try
             {
-                _logger.LogInformation("Success with lang={Lang} psm={Psm}: {Count} words", lang, psm, words.Count);
-                return words;
+                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "3") })
+                {
+                    var words = await TryTesseractAsync(preprocessed, lang, psm);
+                    if (words.Count > 0)
+                    {
+                        _logger.LogInformation("Success with strategy='{Strategy}' lang={Lang} psm={Psm}: {Count} words",
+                            strategy, lang, psm, words.Count);
+                        return words;
+                    }
+                    _logger.LogInformation("No words with strategy='{Strategy}' lang={Lang} psm={Psm}", strategy, lang, psm);
+                }
             }
-            _logger.LogInformation("No words with lang={Lang} psm={Psm}, trying next...", lang, psm);
+            finally
+            {
+                if (preprocessed != imagePath && File.Exists(preprocessed))
+                    File.Delete(preprocessed);
+            }
+        }
+
+        // Final fallback: original image with English
+        var fallbackWords = await TryTesseractAsync(imagePath, "eng", "6");
+        if (fallbackWords.Count > 0)
+        {
+            _logger.LogInformation("Success with original image eng/psm6: {Count} words", fallbackWords.Count);
+            return fallbackWords;
         }
 
         return new List<OcrWord>();
     }
 
-    private async Task<string> PreprocessImageAsync(string imagePath)
+    private async Task<string> PreprocessImageAsync(string imagePath, string convertArgs)
     {
+        var suffix = $"_pre{Guid.NewGuid():N}.png";
         var preprocessed = Path.Combine(Path.GetDirectoryName(imagePath)!,
-            $"{Path.GetFileNameWithoutExtension(imagePath)}_pre.png");
+            $"{Path.GetFileNameWithoutExtension(imagePath)}{suffix}");
 
         var psi = new ProcessStartInfo
         {
             FileName = "convert",
-            // Grayscale, normalize contrast, sharpen, threshold for clean B&W, resize up for small images
-            Arguments = $"\"{imagePath}\" -colorspace Gray -normalize -sharpen 0x1 -resize \"200%\" \"{preprocessed}\"",
+            Arguments = $"\"{imagePath}\" {convertArgs} \"{preprocessed}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -140,7 +164,7 @@ public class ImageImportService : IImageImportService
                 return imagePath;
             }
 
-            _logger.LogInformation("Image preprocessed: {Path}", preprocessed);
+            _logger.LogInformation("Image preprocessed ({Args}): {Path}", convertArgs, preprocessed);
             return preprocessed;
         }
         catch (Exception ex)
@@ -153,7 +177,6 @@ public class ImageImportService : IImageImportService
     private async Task<List<OcrWord>> TryTesseractAsync(string imagePath, string lang, string psm)
     {
         var tsvOutput = Path.Combine(Path.GetDirectoryName(imagePath)!, $"{Guid.NewGuid()}");
-        var preprocessedPath = await PreprocessImageAsync(imagePath);
 
         try
         {
@@ -161,7 +184,7 @@ public class ImageImportService : IImageImportService
             var psi = new ProcessStartInfo
             {
                 FileName = "tesseract",
-                Arguments = $"\"{preprocessedPath}\" \"{tsvOutput}\" -l {lang} --psm {psm} --dpi 300 tsv",
+                Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l {lang} --psm {psm} --dpi 300 tsv",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -219,8 +242,6 @@ public class ImageImportService : IImageImportService
         {
             var tsvFile = tsvOutput + ".tsv";
             if (File.Exists(tsvFile)) File.Delete(tsvFile);
-            if (preprocessedPath != imagePath && File.Exists(preprocessedPath))
-                File.Delete(preprocessedPath);
         }
     }
 
@@ -256,7 +277,10 @@ public class ImageImportService : IImageImportService
             if (!int.TryParse(parts[7], out var top)) continue;
             if (!int.TryParse(parts[8], out var width)) continue;
             if (!int.TryParse(parts[9], out var height)) continue;
-            if (!int.TryParse(parts[10], out var conf)) continue;
+            // Tesseract outputs confidence as float (e.g. "42.886963"), parse as double then round
+            if (!double.TryParse(parts[10], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var confD)) continue;
+            var conf = (int)Math.Round(confD);
 
             if (conf >= 0 && conf < 5) { skippedLowConf++; continue; }
 

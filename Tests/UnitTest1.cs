@@ -193,4 +193,68 @@ public class ImageImportTsvParserTests
         Assert.Equal("Desayuno", result[1].Text);
         Assert.Equal("Avena", result[2].Text);
     }
+
+    [Fact]
+    public void ParseTsvLines_HandlesFloatConfidence()
+    {
+        // Production Tesseract outputs confidence as float (e.g. 42.886963)
+        var lines = new[]
+        {
+            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+            "5\t1\t1\t1\t1\t1\t143\t33\t198\t95\t49.362656\tDesayuno",
+            "5\t1\t1\t1\t1\t2\t499\t37\t143\t65\t42.130310\tBebida",
+            "5\t1\t1\t1\t1\t3\t792\t37\t143\t65\t92.886963\tAvena",
+        };
+        var result = _service.ParseTsvLines(lines);
+        Assert.Equal(3, result.Count);
+        Assert.Equal("Desayuno", result[0].Text);
+        Assert.Equal(49, result[0].Confidence); // 49.36 rounds to 49
+        Assert.Equal("Bebida", result[1].Text);
+        Assert.Equal(42, result[1].Confidence);
+        Assert.Equal("Avena", result[2].Text);
+        Assert.Equal(93, result[2].Confidence); // 92.88 rounds to 93
+    }
+
+    [Fact]
+    public void ParseTsvLines_FloatConfidence_StillFiltersLowConf()
+    {
+        var lines = new[]
+        {
+            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+            "5\t1\t1\t1\t1\t1\t100\t200\t80\t20\t2.5\tgarbage",   // 2.5 rounds to 3, < 5 threshold
+            "5\t1\t1\t1\t1\t2\t190\t200\t120\t20\t85.7\tBueno",   // 85.7 rounds to 86, OK
+        };
+        var result = _service.ParseTsvLines(lines);
+        Assert.Single(result);
+        Assert.Equal("Bueno", result[0].Text);
+    }
+
+    [Fact]
+    public void ParseTsvLines_RealProductionTsvOutput()
+    {
+        // Exact format from the production logs that was failing
+        var lines = new[]
+        {
+            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+            "1\t1\t0\t0\t0\t0\t0\t0\t2358\t3098\t-1\t",
+            "2\t1\t1\t0\t0\t0\t147\t37\t2060\t66\t-1\t",
+            "3\t1\t1\t1\t0\t0\t147\t37\t2060\t66\t-1\t",
+            "4\t1\t1\t1\t1\t0\t147\t37\t2060\t66\t-1\t",
+            "5\t1\t1\t1\t1\t1\t143\t33\t198\t95\t49.362656\tDia",
+            "5\t1\t1\t1\t1\t2\t499\t37\t143\t65\t42.130310\tDia",
+            "5\t1\t1\t1\t1\t3\t792\t37\t143\t65\t42.886963\tDia",
+            "5\t1\t1\t1\t1\t4\t1093\t37\t143\t65\t27.497826\tDia",
+            "5\t1\t1\t1\t1\t5\t1393\t37\t144\t65\t61.918968\tDia",
+            "5\t1\t2\t1\t1\t1\t50\t120\t100\t25\t88.5\tDesayuno",
+            "5\t1\t3\t1\t1\t1\t150\t150\t120\t25\t75.3\tBebida",
+            "5\t1\t3\t1\t1\t2\t280\t150\t30\t25\t70.1\tde",
+            "5\t1\t3\t1\t1\t3\t320\t150\t50\t25\t65.8\tsoja",
+        };
+        var result = _service.ParseTsvLines(lines);
+        // All level-5 entries with non-empty text and float confidence should parse
+        Assert.Equal(9, result.Count);
+        Assert.Equal("Dia", result[0].Text);
+        Assert.Equal("Desayuno", result[5].Text);
+        Assert.Equal("Bebida", result[6].Text);
+    }
 }
