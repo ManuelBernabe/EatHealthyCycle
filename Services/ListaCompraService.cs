@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +11,22 @@ namespace EatHealthyCycle.Services;
 public class ListaCompraService : IListaCompraService
 {
     private readonly AppDbContext _db;
+
+    // Meal type words to strip from food names
+    private static readonly HashSet<string> MealTypeWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA",
+        "PRE", "PREDESAYUNO", "MEDIA", "MAÑANA", "MEDIAMANANA"
+    };
+
+    // Noise patterns - not real food items
+    private static readonly string[] NoisePatterns =
+    {
+        "masteron", "telmisartan", "ursobilane", "testo cipionato",
+        "omega 3", "suplementaci", "actividad f", "día off",
+        "dia off", "no entreno", "igual a los", "nac desayuno",
+        "lunes jueves", "1ml de dormir", "capsula"
+    };
 
     public ListaCompraService(AppDbContext db)
     {
@@ -30,7 +47,7 @@ public class ListaCompraService : IListaCompraService
         if (autoItems.Any())
             _db.ItemsListaCompra.RemoveRange(autoItems);
 
-        // Strategy 1: Get foods from original diet via ComidaId
+        // Strategy 1: Get foods from original diet via ComidaId -> Alimentos table
         var comidaIds = plan.Dias
             .SelectMany(d => d.Comidas)
             .Where(c => c.ComidaId.HasValue)
@@ -47,10 +64,8 @@ public class ListaCompraService : IListaCompraService
                 .ToListAsync();
             foreach (var a in alimentosDb)
             {
-                var name = NormalizeName(a.Nombre);
-                // Safety: if name is suspiciously long, it may be concatenated foods
-                if (name.Length > 50 && a.Cantidad == null)
-                    continue; // Skip garbage entries from bad PDF imports
+                var name = CleanFoodName(a.Nombre);
+                if (IsGarbageItem(name)) continue;
                 alimentos.Add((name, a.Cantidad));
             }
         }
@@ -69,19 +84,30 @@ public class ListaCompraService : IListaCompraService
                     foreach (var item in items)
                     {
                         var match = Regex.Match(item.Trim(), @"^(.+?)\s*\((.+?)\)\s*$");
+                        string name;
+                        string? qty;
                         if (match.Success)
-                            alimentos.Add((NormalizeName(match.Groups[1].Value), match.Groups[2].Value.Trim()));
-                        else if (!string.IsNullOrWhiteSpace(item))
-                            alimentos.Add((NormalizeName(item), null));
+                        {
+                            name = CleanFoodName(match.Groups[1].Value);
+                            qty = match.Groups[2].Value.Trim();
+                        }
+                        else
+                        {
+                            name = CleanFoodName(item);
+                            qty = null;
+                        }
+                        if (IsGarbageItem(name)) continue;
+                        alimentos.Add((name, qty));
                     }
                 }
             }
         }
 
-        // Group by normalized name, aggregate quantities
+        // Group by normalized key (accent-insensitive, meal-type-stripped), aggregate quantities
         var agrupados = alimentos
             .Where(a => !string.IsNullOrWhiteSpace(a.Nombre) && a.Nombre.Length >= 2)
             .GroupBy(a => NormalizeKey(a.Nombre))
+            .Where(g => !string.IsNullOrWhiteSpace(g.Key) && g.Key.Length >= 2)
             .Select(g =>
             {
                 var quantities = g
@@ -113,10 +139,11 @@ public class ListaCompraService : IListaCompraService
     }
 
     /// <summary>
-    /// Normalize a food name: whitelist approach - only keep letters, digits, basic punctuation.
+    /// Clean a food name: whitelist chars, strip trailing meal type words.
     /// </summary>
-    private static string NormalizeName(string name)
+    private static string CleanFoodName(string name)
     {
+        // Step 1: whitelist characters
         var sb = new StringBuilder();
         foreach (var c in name)
         {
@@ -126,20 +153,96 @@ public class ListaCompraService : IListaCompraService
         }
         name = Regex.Replace(sb.ToString().Trim(), @"\s{2,}", " ");
         name = name.Trim('-', '–', '—', ' ', '*');
+
+        // Step 2: strip trailing meal type words (e.g., "TERNERA CENA" -> "TERNERA")
+        name = StripMealTypeSuffix(name);
+
         return name;
     }
 
     /// <summary>
-    /// Create a grouping key: lowercase, no accents aren't stripped but consistent.
+    /// Remove trailing meal type words from a food name.
+    /// "PECHUGA DE PAVO FRESCO CENA" -> "PECHUGA DE PAVO FRESCO"
+    /// "TERNERA COMIDA" -> "TERNERA"
+    /// </summary>
+    private static string StripMealTypeSuffix(string name)
+    {
+        var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 2) return name;
+
+        // Strip from end while the last word is a meal type
+        int end = words.Length;
+        while (end > 1 && MealTypeWords.Contains(words[end - 1]))
+            end--;
+
+        if (end == words.Length) return name;
+        return string.Join(" ", words.Take(end)).Trim();
+    }
+
+    /// <summary>
+    /// Check if a food name is garbage (noise, medication, concatenated meals, etc.)
+    /// </summary>
+    private static bool IsGarbageItem(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length < 2) return true;
+
+        // Too long = likely concatenated multiple foods
+        if (name.Length > 45) return true;
+
+        var lower = name.ToLowerInvariant();
+
+        // Contains noise patterns
+        foreach (var noise in NoisePatterns)
+        {
+            if (lower.Contains(noise)) return true;
+        }
+
+        // Contains multiple food keywords = likely concatenated
+        var foodKeywords = new[] { "pollo", "ternera", "pavo", "arroz", "patata", "boniato",
+            "aguacate", "aove", "sal yodada", "champiñon", "pechuga" };
+        int hits = foodKeywords.Count(k => lower.Contains(k));
+        if (hits >= 3) return true;
+
+        // Starts with quantity (e.g., "50g Proteína whey") — extract the food part
+        // This is handled in ParseAlimento instead
+
+        // Pure number or very short
+        if (Regex.IsMatch(name, @"^\d+\s*[a-zA-Z]*$") && name.Length < 5) return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Create a grouping key: lowercase, accents stripped for consistent grouping.
+    /// "JAMÓN SERRANO" and "JAMON SERRANO" become the same key.
     /// </summary>
     private static string NormalizeKey(string name)
     {
-        return NormalizeName(name).ToLowerInvariant().Trim();
+        name = StripMealTypeSuffix(name);
+        name = StripAccents(name);
+        // Remove embedded quantities for grouping (e.g., "NUEZ 20G" -> "NUEZ")
+        name = Regex.Replace(name, @"\s+\d+\s*(g|gr|mg|kg|ml|l|cl|ud|unidades?|rebanadas?)\b.*$",
+            "", RegexOptions.IgnoreCase);
+        return name.ToLowerInvariant().Trim();
+    }
+
+    /// <summary>
+    /// Strip accents/diacritics: "JAMÓN" -> "JAMON", "CAFÉ" -> "CAFE"
+    /// </summary>
+    private static string StripAccents(string text)
+    {
+        var normalized = text.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder();
+        foreach (var c in normalized)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC);
     }
 
     /// <summary>
     /// Aggregate quantities: sum numeric values with same units, otherwise join distinct.
-    /// Returns weekly total string like "700G" or "7 x 100G".
     /// </summary>
     private static string AggregateQuantities(List<string> quantities, int occurrences)
     {
@@ -151,7 +254,7 @@ public class ListaCompraService : IListaCompraService
         {
             var m = Regex.Match(q.Trim(), @"^(\d+(?:[.,]\d+)?)\s*([a-zA-Z]+)$");
             if (m.Success && decimal.TryParse(m.Groups[1].Value.Replace(',', '.'),
-                System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var val))
+                NumberStyles.Any, CultureInfo.InvariantCulture, out var val))
             {
                 parsed.Add((val, m.Groups[2].Value.ToUpperInvariant()));
             }
@@ -179,14 +282,14 @@ public class ListaCompraService : IListaCompraService
 
     private static string CategorizeFood(string nombre)
     {
-        var n = nombre.ToLowerInvariant();
+        var n = StripAccents(nombre).ToLowerInvariant();
 
         if (n.Contains("pollo") || n.Contains("ternera") || n.Contains("pavo") ||
-            n.Contains("jamon") || n.Contains("jamón") || n.Contains("lomo") ||
-            n.Contains("huevo") || n.Contains("clara") || n.Contains("atún") ||
-            n.Contains("atun") || n.Contains("serrano") || n.Contains("embuchado") ||
-            n.Contains("salmón") || n.Contains("salmon") || n.Contains("merluza") ||
-            n.Contains("gambas") || n.Contains("langostino"))
+            n.Contains("jamon") || n.Contains("lomo") ||
+            n.Contains("huevo") || n.Contains("clara") || n.Contains("atun") ||
+            n.Contains("serrano") || n.Contains("embuchado") ||
+            n.Contains("salmon") || n.Contains("merluza") ||
+            n.Contains("gambas") || n.Contains("langostino") || n.Contains("tortilla"))
             return "Proteínas";
 
         if (n.Contains("avena") || n.Contains("arroz") || n.Contains("pan ") ||
@@ -201,31 +304,29 @@ public class ListaCompraService : IListaCompraService
             return "Grasas";
 
         if (n.Contains("calabac") || n.Contains("pimiento") || n.Contains("cebolla") ||
-            n.Contains("tomate") || n.Contains("champiñon") || n.Contains("lechuga") ||
-            n.Contains("zanahoria") || n.Contains("espinaca") || n.Contains("brócoli") ||
-            n.Contains("brocoli") || n.Contains("judías") || n.Contains("judias") ||
-            n.Contains("pepino") || n.Contains("espárrago") || n.Contains("esparrago") ||
+            n.Contains("tomate") || n.Contains("champinon") || n.Contains("lechuga") ||
+            n.Contains("zanahoria") || n.Contains("espinaca") || n.Contains("brocoli") ||
+            n.Contains("judias") || n.Contains("pepino") || n.Contains("esparrago") ||
             n.Contains("berenjena") || n.Contains("col ") || n.Contains("coliflor"))
             return "Verduras";
 
-        if (n.Contains("plátano") || n.Contains("platano") || n.Contains("manzana") ||
-            n.Contains("naranja") || n.Contains("fresa") || n.Contains("arándano") ||
-            n.Contains("arandano") || n.Contains("fruta") || n.Contains("kiwi") ||
-            n.Contains("piña") || n.Contains("melocotón"))
+        if (n.Contains("platano") || n.Contains("manzana") ||
+            n.Contains("naranja") || n.Contains("fresa") || n.Contains("arandano") ||
+            n.Contains("fruta") || n.Contains("kiwi") ||
+            n.Contains("pina") || n.Contains("melocoton"))
             return "Frutas";
 
-        if (n.Contains("whey") || n.Contains("proteina") || n.Contains("proteína") ||
+        if (n.Contains("whey") || n.Contains("proteina") ||
             n.Contains("canela") || n.Contains("cacao") || n.Contains("creatina") ||
             n.Contains("suplemento"))
             return "Suplementos";
 
-        if (n.Contains("soja") || n.Contains("bebida") || n.Contains("café") ||
-            n.Contains("cafe") || n.Contains("leche"))
+        if (n.Contains("soja") || n.Contains("bebida") || n.Contains("cafe") ||
+            n.Contains("leche"))
             return "Bebidas";
 
-        if (n.Contains("sal") || n.Contains("pimienta") || n.Contains("orégano") ||
-            n.Contains("oregano") || n.Contains("ajo") || n.Contains("especia") ||
-            n.Contains("pimentón"))
+        if (n.Contains("sal") || n.Contains("pimienta") || n.Contains("oregano") ||
+            n.Contains("ajo") || n.Contains("especia") || n.Contains("pimenton"))
             return "Condimentos";
 
         return "Otros";
