@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EatHealthyCycle.Data;
 using EatHealthyCycle.DTOs;
+using EatHealthyCycle.Models;
 using EatHealthyCycle.Services.Interfaces;
 
 namespace EatHealthyCycle.Controllers;
@@ -30,10 +31,76 @@ public class PlanesController : ControllerBase
         if (usuario == null) return NotFound("Usuario no encontrado");
 
         var plan = await _planService.GenerarPlanAsync(usuarioId, dto.DietaId, dto.FechaInicio);
-
         var dieta = await _db.Dietas.FindAsync(dto.DietaId);
+
         return CreatedAtAction(nameof(ObtenerDetalle), new { id = plan.Id },
-            new PlanSemanalResumenDto(plan.Id, plan.DietaId, dieta!.Nombre, plan.FechaInicio, plan.FechaFin));
+            new PlanSemanalResumenDto(plan.Id, plan.DietaId, dieta?.Nombre ?? "Plan manual", plan.FechaInicio, plan.FechaFin));
+    }
+
+    [HttpPost("usuarios/{usuarioId}/planes/manual")]
+    public async Task<ActionResult<PlanSemanalResumenDto>> CrearManual(int usuarioId, CrearPlanManualDto dto)
+    {
+        var usuario = await _db.Usuarios.FindAsync(usuarioId);
+        if (usuario == null) return NotFound("Usuario no encontrado");
+
+        var fechaInicio = dto.FechaInicio;
+        while (fechaInicio.DayOfWeek != DayOfWeek.Monday)
+            fechaInicio = fechaInicio.AddDays(-1);
+
+        var plan = new PlanSemanal
+        {
+            UsuarioId = usuarioId,
+            DietaId = null,
+            FechaInicio = fechaInicio,
+            FechaFin = fechaInicio.AddDays(6)
+        };
+
+        for (int i = 0; i < 7; i++)
+        {
+            var fecha = fechaInicio.AddDays(i);
+            plan.Dias.Add(new PlanDia
+            {
+                Fecha = fecha,
+                DiaSemana = fecha.DayOfWeek
+            });
+        }
+
+        _db.PlanesSemanal.Add(plan);
+        await _db.SaveChangesAsync();
+
+        return CreatedAtAction(nameof(ObtenerDetalle), new { id = plan.Id },
+            new PlanSemanalResumenDto(plan.Id, null, dto.Nombre, plan.FechaInicio, plan.FechaFin));
+    }
+
+    [HttpPost("plandia/{planDiaId}/comidas")]
+    public async Task<ActionResult<PlanComidaDto>> AddComida(int planDiaId, AddPlanComidaDto dto)
+    {
+        var planDia = await _db.Set<PlanDia>().FindAsync(planDiaId);
+        if (planDia == null) return NotFound();
+
+        var comida = new PlanComida
+        {
+            PlanDiaId = planDiaId,
+            Tipo = dto.Tipo,
+            Descripcion = dto.Descripcion
+        };
+
+        _db.PlanComidas.Add(comida);
+        await _db.SaveChangesAsync();
+
+        return Ok(new PlanComidaDto(comida.Id, comida.Tipo, comida.Descripcion, comida.Completada, comida.FechaCompletada));
+    }
+
+    [HttpDelete("plancomidas/{id}")]
+    public async Task<IActionResult> EliminarComida(int id)
+    {
+        var comida = await _db.PlanComidas.FindAsync(id);
+        if (comida == null) return NotFound();
+
+        _db.PlanComidas.Remove(comida);
+        await _db.SaveChangesAsync();
+
+        return NoContent();
     }
 
     [HttpGet("usuarios/{usuarioId}/planes")]
@@ -43,7 +110,7 @@ public class PlanesController : ControllerBase
             .Where(p => p.UsuarioId == usuarioId)
             .Include(p => p.Dieta)
             .OrderByDescending(p => p.FechaInicio)
-            .Select(p => new PlanSemanalResumenDto(p.Id, p.DietaId, p.Dieta.Nombre, p.FechaInicio, p.FechaFin))
+            .Select(p => new PlanSemanalResumenDto(p.Id, p.DietaId, p.Dieta != null ? p.Dieta.Nombre : "Plan manual", p.FechaInicio, p.FechaFin))
             .ToListAsync();
 
         return planes;
@@ -62,7 +129,7 @@ public class PlanesController : ControllerBase
 
         return new PlanSemanalDetalleDto(
             plan.Id,
-            plan.Dieta.Nombre,
+            plan.Dieta?.Nombre ?? "Plan manual",
             plan.FechaInicio,
             plan.FechaFin,
             plan.Dias

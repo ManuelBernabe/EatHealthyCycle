@@ -88,6 +88,9 @@ const API = {
 
     // Planes
     crearPlan: (usuarioId, dietaId, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes`, { dietaId, fechaInicio }),
+    crearPlanManual: (usuarioId, nombre, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes/manual`, { nombre, fechaInicio }),
+    addComidaPlan: (planDiaId, tipo, descripcion) => API.request('POST', `/api/plandia/${planDiaId}/comidas`, { tipo, descripcion }),
+    deleteComidaPlan: (comidaId) => API.request('DELETE', `/api/plancomidas/${comidaId}`),
     listarPlanes: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/planes`),
     obtenerPlan: (id) => API.request('GET', `/api/planes/${id}`),
     eliminarPlan: (id) => API.request('DELETE', `/api/planes/${id}`),
@@ -103,6 +106,8 @@ const API = {
     generarListaCompra: (planId) => API.request('POST', `/api/planes/${planId}/lista-compra`),
     obtenerListaCompra: (planId) => API.request('GET', `/api/planes/${planId}/lista-compra`),
     toggleComprado: (itemId) => API.request('PUT', `/api/lista-compra/${itemId}`),
+    addItemCompra: (planId, nombre, cantidad, categoria) => API.request('POST', `/api/planes/${planId}/lista-compra/item`, { nombre, cantidad, categoria }),
+    deleteItemCompra: (itemId) => API.request('DELETE', `/api/lista-compra/${itemId}`),
 
     // Admin - Users
     listarUsuarios: () => API.request('GET', '/users'),

@@ -12,7 +12,6 @@ public class PdfImportService : IPdfImportService
     private readonly AppDbContext _db;
     private readonly ILogger<PdfImportService> _logger;
 
-    // Maps "DIA 1" -> Monday, "DIA 2" -> Tuesday, etc.
     private static readonly Dictionary<int, DayOfWeek> DiaNumeroMap = new()
     {
         [1] = DayOfWeek.Monday,
@@ -24,20 +23,6 @@ public class PdfImportService : IPdfImportService
         [7] = DayOfWeek.Sunday
     };
 
-    private static readonly Dictionary<string, DayOfWeek> DiasNombreMap = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["lunes"] = DayOfWeek.Monday,
-        ["martes"] = DayOfWeek.Tuesday,
-        ["miércoles"] = DayOfWeek.Wednesday,
-        ["miercoles"] = DayOfWeek.Wednesday,
-        ["jueves"] = DayOfWeek.Thursday,
-        ["viernes"] = DayOfWeek.Friday,
-        ["sábado"] = DayOfWeek.Saturday,
-        ["sabado"] = DayOfWeek.Saturday,
-        ["domingo"] = DayOfWeek.Sunday
-    };
-
-    // Meal type detection - order matters (longer matches first)
     private static readonly (string pattern, TipoComida tipo)[] MealPatterns =
     {
         ("pre\\s*desayuno", TipoComida.PreDesayuno),
@@ -57,58 +42,6 @@ public class PdfImportService : IPdfImportService
 
     public async Task<Dieta> ImportarDietaDesdePdfAsync(int usuarioId, string nombreDieta, Stream pdfStream, string nombreArchivo)
     {
-        var texto = ExtraerTexto(pdfStream);
-        _logger.LogInformation("PDF text extracted ({Length} chars): {Preview}",
-            texto.Length, texto.Length > 500 ? texto[..500] : texto);
-
-        var dieta = ParsearDieta(texto, usuarioId, nombreDieta, nombreArchivo);
-
-        _logger.LogInformation("Diet parsed: {Days} days, {Meals} total meals",
-            dieta.Dias.Count,
-            dieta.Dias.Sum(d => d.Comidas.Count));
-
-        _db.Dietas.Add(dieta);
-        await _db.SaveChangesAsync();
-
-        return dieta;
-    }
-
-    private static string ExtraerTexto(Stream pdfStream)
-    {
-        using var document = PdfDocument.Open(pdfStream);
-        var lines = new List<string>();
-
-        foreach (var page in document.GetPages())
-        {
-            // Extract words and group by Y position to reconstruct lines
-            var words = page.GetWords().ToList();
-            if (words.Count == 0)
-            {
-                // Fallback to page.Text
-                if (!string.IsNullOrWhiteSpace(page.Text))
-                    lines.Add(page.Text);
-                continue;
-            }
-
-            // Group words by approximate Y position (same line)
-            var wordsByLine = words
-                .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
-                .OrderByDescending(g => g.Key); // Top to bottom
-
-            foreach (var lineGroup in wordsByLine)
-            {
-                var lineWords = lineGroup.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text);
-                var line = string.Join(" ", lineWords).Trim();
-                if (!string.IsNullOrWhiteSpace(line))
-                    lines.Add(line);
-            }
-        }
-
-        return string.Join("\n", lines);
-    }
-
-    private static Dieta ParsearDieta(string texto, int usuarioId, string nombreDieta, string nombreArchivo)
-    {
         var dieta = new Dieta
         {
             UsuarioId = usuarioId,
@@ -116,265 +49,324 @@ public class PdfImportService : IPdfImportService
             ArchivoOriginal = nombreArchivo
         };
 
-        var lineas = texto.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        using var document = PdfDocument.Open(pdfStream);
+        var allPages = document.GetPages().ToList();
 
-        // Filter out noise lines (headers, page numbers, etc.)
-        var lineasFiltradas = lineas
-            .Where(l => !IsNoiseLine(l))
-            .ToList();
+        _logger.LogInformation("PDF has {Pages} pages", allPages.Count);
 
-        var diasMap = new Dictionary<int, DietaDia>();
-        DietaDia? diaActual = null;
-        Comida? comidaActual = null;
-        int ordenComida = 0;
-
-        foreach (var linea in lineasFiltradas)
+        // Process table pages (columns with DIA headers)
+        var diasFromTables = new Dictionary<int, DietaDia>();
+        foreach (var page in allPages)
         {
-            // Detect day: "DIA 1", "DIA 2", "Día 1", etc.
-            var diaNum = DetectarDiaNumero(linea);
-            if (diaNum.HasValue)
-            {
-                if (!diasMap.ContainsKey(diaNum.Value))
-                {
-                    var dayOfWeek = DiaNumeroMap.GetValueOrDefault(diaNum.Value, (DayOfWeek)((diaNum.Value % 7)));
-                    var nuevoDia = new DietaDia
-                    {
-                        DiaSemana = dayOfWeek,
-                        Nota = $"Día {diaNum.Value}"
-                    };
-                    diasMap[diaNum.Value] = nuevoDia;
-                    dieta.Dias.Add(nuevoDia);
-                }
-                diaActual = diasMap[diaNum.Value];
-                comidaActual = null;
-                ordenComida = diaActual.Comidas.Count;
-                continue;
-            }
-
-            // Detect named day: "Lunes", "Martes", etc.
-            var diaNombre = DetectarDiaNombre(linea);
-            if (diaNombre.HasValue)
-            {
-                var dayIndex = (int)diaNombre.Value;
-                if (!diasMap.ContainsKey(dayIndex + 10)) // offset to avoid collision with DIA numbers
-                {
-                    var nuevoDia = new DietaDia { DiaSemana = diaNombre.Value };
-                    diasMap[dayIndex + 10] = nuevoDia;
-                    dieta.Dias.Add(nuevoDia);
-                }
-                diaActual = diasMap[dayIndex + 10];
-                comidaActual = null;
-                ordenComida = diaActual.Comidas.Count;
-                continue;
-            }
-
-            // Detect meal type
-            var tipoDetectado = DetectarTipoComida(linea);
-            if (tipoDetectado.HasValue && diaActual != null)
-            {
-                // Only create new meal if we don't already have this type for this day
-                var existente = diaActual.Comidas.FirstOrDefault(c => c.Tipo == tipoDetectado.Value);
-                if (existente != null)
-                {
-                    comidaActual = existente;
-                }
-                else
-                {
-                    comidaActual = new Comida { Tipo = tipoDetectado.Value, Orden = ordenComida++ };
-                    diaActual.Comidas.Add(comidaActual);
-                }
-
-                // Check if the line also has ingredients after the meal type
-                var resto = RemoverTipoComida(linea, tipoDetectado.Value);
-                if (!string.IsNullOrWhiteSpace(resto))
-                {
-                    AgregarAlimentos(comidaActual, resto);
-                }
-                continue;
-            }
-
-            // Add as food item
-            if (comidaActual != null && !string.IsNullOrWhiteSpace(linea))
-            {
-                AgregarAlimentos(comidaActual, linea);
-            }
+            ProcessTablePage(page, diasFromTables, _logger);
         }
 
-        // Handle "Día off" section - parse as Sunday (day 7)
-        ParsearDiaOff(lineasFiltradas, dieta);
-
-        // If no days detected, create generic day
-        if (dieta.Dias.Count == 0)
+        foreach (var kvp in diasFromTables.OrderBy(k => k.Key))
         {
-            var diaGenerico = new DietaDia
-            {
-                DiaSemana = DayOfWeek.Monday,
-                Nota = "Importado sin estructura de días detectada"
-            };
-            var comidaGenerica = new Comida { Tipo = TipoComida.Comida, Orden = 0 };
-            foreach (var linea in lineasFiltradas)
-            {
-                var (nombre, cantidad) = ParsearAlimento(linea);
-                if (!string.IsNullOrWhiteSpace(nombre))
-                    comidaGenerica.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
-            }
-            if (comidaGenerica.Alimentos.Count > 0)
-            {
-                diaGenerico.Comidas.Add(comidaGenerica);
-                dieta.Dias.Add(diaGenerico);
-            }
+            dieta.Dias.Add(kvp.Value);
         }
 
+        // Process "Día off" from plain text sections
+        var plainText = ExtractPlainText(allPages);
+        ParseDiaOff(plainText, dieta);
+
+        _logger.LogInformation("Diet parsed: {Days} days, {Meals} total meals",
+            dieta.Dias.Count,
+            dieta.Dias.Sum(d => d.Comidas.Count));
+
+        foreach (var dia in dieta.Dias)
+        {
+            _logger.LogInformation("  Day {Day}: {Meals} meals, {Foods} total foods",
+                dia.DiaSemana, dia.Comidas.Count,
+                dia.Comidas.Sum(c => c.Alimentos.Count));
+        }
+
+        _db.Dietas.Add(dieta);
+        await _db.SaveChangesAsync();
         return dieta;
     }
 
-    private static void ParsearDiaOff(List<string> lineas, Dieta dieta)
+    /// <summary>
+    /// Process a single PDF page that contains a table with day columns.
+    /// Each day has a pair of columns: INGESTA (meal type) + INGREDIENTES (food items).
+    /// </summary>
+    private static void ProcessTablePage(Page page, Dictionary<int, DietaDia> dias, ILogger logger)
     {
-        // Look for "Día off" or "dia off" section
-        var offIndex = lineas.FindIndex(l =>
-            Regex.IsMatch(l, @"d[ií]a\s+off", RegexOptions.IgnoreCase));
+        var words = page.GetWords().ToList();
+        if (words.Count == 0) return;
 
-        if (offIndex < 0) return;
+        // Step 1: Find DIA headers and their X positions
+        var diaHeaders = FindDiaHeaders(words);
+        if (diaHeaders.Count == 0) return;
 
-        // Check if we already have a Sunday
-        if (dieta.Dias.Any(d => d.DiaSemana == DayOfWeek.Sunday)) return;
+        logger.LogInformation("Page {Page}: Found {Count} DIA headers: {Headers}",
+            page.Number, diaHeaders.Count,
+            string.Join(", ", diaHeaders.Select(h => $"DIA {h.diaNum} at X={h.xCenter:F0}")));
 
-        var diaOff = new DietaDia
+        // Step 2: Find INGREDIENTES column headers
+        var ingredientesHeaders = words
+            .Where(w => w.Text.Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
+            .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
+            .OrderBy(w => w.xLeft)
+            .ToList();
+
+        // Step 3: Define column boundaries for each day
+        var dayColumns = new List<(int diaNum, double contentLeft, double contentRight)>();
+
+        for (int i = 0; i < diaHeaders.Count; i++)
         {
-            DiaSemana = DayOfWeek.Sunday,
-            Nota = "Día de descanso"
-        };
+            var dia = diaHeaders[i];
+            var closestIngr = ingredientesHeaders
+                .Where(ig => Math.Abs(ig.xCenter - dia.xCenter) < 200)
+                .OrderBy(ig => Math.Abs(ig.xCenter - dia.xCenter))
+                .FirstOrDefault();
 
-        Comida? comidaActual = null;
-        int orden = 0;
+            double contentLeft, contentRight;
 
-        for (int i = offIndex + 1; i < lineas.Count; i++)
-        {
-            var linea = lineas[i];
-
-            // Stop if we hit another section
-            if (Regex.IsMatch(linea, @"suplementaci[oó]n", RegexOptions.IgnoreCase))
-                break;
-            if (DetectarDiaNumero(linea).HasValue)
-                break;
-
-            var tipo = DetectarTipoComida(linea);
-            if (tipo.HasValue)
+            if (closestIngr != null)
             {
-                comidaActual = new Comida { Tipo = tipo.Value, Orden = orden++ };
-                diaOff.Comidas.Add(comidaActual);
-
-                var resto = RemoverTipoComida(linea, tipo.Value);
-                if (!string.IsNullOrWhiteSpace(resto))
-                    AgregarAlimentos(comidaActual, resto);
-                continue;
+                contentLeft = closestIngr.xLeft - 20;
+                contentRight = i + 1 < diaHeaders.Count
+                    ? diaHeaders[i + 1].xLeft - 30
+                    : page.Width;
+            }
+            else
+            {
+                var pageWidth = page.Width;
+                var colWidth = pageWidth / diaHeaders.Count;
+                contentLeft = dia.xCenter - colWidth / 4;
+                contentRight = dia.xCenter + colWidth / 2;
             }
 
-            if (comidaActual != null && !string.IsNullOrWhiteSpace(linea))
-                AgregarAlimentos(comidaActual, linea);
+            dayColumns.Add((dia.diaNum, contentLeft, contentRight));
         }
 
-        if (diaOff.Comidas.Count > 0)
-            dieta.Dias.Add(diaOff);
-    }
+        // Step 4: Find all unique meal type labels with their Y positions
+        var mealLabels = FindMealLabels(words);
 
-    private static int? DetectarDiaNumero(string linea)
-    {
-        var match = Regex.Match(linea, @"\bd[ií]a\s+(\d+)\b", RegexOptions.IgnoreCase);
-        if (match.Success && int.TryParse(match.Groups[1].Value, out var num) && num >= 1 && num <= 7)
-            return num;
-        return null;
-    }
+        logger.LogInformation("Page {Page}: Found {Count} meal labels: {Labels}",
+            page.Number, mealLabels.Count,
+            string.Join(", ", mealLabels.Select(m => $"{m.tipo} at Y={m.yCenter:F0}")));
 
-    private static DayOfWeek? DetectarDiaNombre(string linea)
-    {
-        var lineaLower = linea.ToLowerInvariant().Trim();
-        // Only match if the line is primarily a day name (not embedded in food text)
-        foreach (var (nombre, dia) in DiasNombreMap)
+        if (mealLabels.Count == 0) return;
+
+        // Step 5: Define meal row boundaries
+        var sortedMeals = mealLabels.OrderByDescending(m => m.yCenter).ToList();
+        var mealRows = new List<(TipoComida tipo, double yTop, double yBottom)>();
+
+        for (int i = 0; i < sortedMeals.Count; i++)
         {
-            if (Regex.IsMatch(lineaLower, $@"^\s*{Regex.Escape(nombre)}\b"))
-                return dia;
+            var yTop = i == 0
+                ? sortedMeals[i].yCenter + 50
+                : (sortedMeals[i].yCenter + sortedMeals[i - 1].yCenter) / 2;
+            var yBottom = i + 1 < sortedMeals.Count
+                ? (sortedMeals[i].yCenter + sortedMeals[i + 1].yCenter) / 2
+                : 0;
+
+            mealRows.Add((sortedMeals[i].tipo, yTop, yBottom));
         }
-        return null;
-    }
 
-    private static TipoComida? DetectarTipoComida(string linea)
-    {
-        var lineaClean = linea.ToLowerInvariant().Trim();
-        // Remove bullet points and dashes at start
-        lineaClean = Regex.Replace(lineaClean, @"^[\-•\*\s]+", "");
-
-        foreach (var (pattern, tipo) in MealPatterns)
+        // Step 6: For each day column x each meal row, collect food words
+        foreach (var col in dayColumns)
         {
-            if (Regex.IsMatch(lineaClean, $@"^{pattern}\b") ||
-                Regex.IsMatch(lineaClean, $@"^\s*-?\s*{pattern}\s*:"))
-                return tipo;
-        }
-        return null;
-    }
-
-    private static string RemoverTipoComida(string linea, TipoComida tipo)
-    {
-        // Remove the meal type header from the line to get remaining content
-        var cleaned = Regex.Replace(linea, @"^[\-•\*\s]*", "");
-        foreach (var (pattern, t) in MealPatterns)
-        {
-            if (t == tipo)
+            if (!dias.ContainsKey(col.diaNum))
             {
-                cleaned = Regex.Replace(cleaned, $@"^{pattern}\s*:?\s*", "", RegexOptions.IgnoreCase);
-                break;
-            }
-        }
-        return cleaned.Trim();
-    }
-
-    private static void AgregarAlimentos(Comida comida, string texto)
-    {
-        // Split by common separators: bullets, "+", line items
-        var items = Regex.Split(texto, @"[•\+]|(?<=\b(?:g|ml|kg|unidades?|latas?|rebanadas?))\s*\+?\s*(?=[A-ZÁÉÍÓÚ])");
-
-        foreach (var item in items)
-        {
-            var cleaned = item.Trim().Trim('-', '•', '*', ' ');
-            // Remove leading bullet markers
-            cleaned = Regex.Replace(cleaned, @"^[\-•\*\s]+", "").Trim();
-
-            if (string.IsNullOrWhiteSpace(cleaned)) continue;
-            if (cleaned.Length < 2) continue;
-            if (IsNoiseLine(cleaned)) continue;
-
-            // Skip lines that are just meal type names
-            if (DetectarTipoComida(cleaned).HasValue && cleaned.Length < 20) continue;
-
-            var (nombre, cantidad) = ParsearAlimento(cleaned);
-            if (!string.IsNullOrWhiteSpace(nombre) && nombre.Length >= 2)
-            {
-                // Avoid duplicate foods in the same meal
-                if (!comida.Alimentos.Any(a =>
-                    a.Nombre.Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+                dias[col.diaNum] = new DietaDia
                 {
-                    comida.Alimentos.Add(new Alimento
+                    DiaSemana = DiaNumeroMap.GetValueOrDefault(col.diaNum, (DayOfWeek)(col.diaNum % 7)),
+                    Nota = $"Día {col.diaNum}"
+                };
+            }
+
+            var dia = dias[col.diaNum];
+            int orden = dia.Comidas.Count;
+
+            foreach (var row in mealRows)
+            {
+                var cellWords = words
+                    .Where(w =>
                     {
-                        Nombre = nombre,
-                        Cantidad = cantidad
-                    });
+                        var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                        var wy = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                        return wx >= col.contentLeft && wx <= col.contentRight &&
+                               wy >= row.yBottom && wy <= row.yTop;
+                    })
+                    .ToList();
+
+                if (cellWords.Count == 0) continue;
+
+                var lines = GroupWordsIntoLines(cellWords);
+                var foodLines = lines
+                    .Where(l => !IsNoiseLine(l) && !IsMealTypeHeader(l))
+                    .ToList();
+
+                if (foodLines.Count == 0) continue;
+
+                var existingComida = dia.Comidas.FirstOrDefault(c => c.Tipo == row.tipo);
+                if (existingComida == null)
+                {
+                    existingComida = new Comida { Tipo = row.tipo, Orden = orden++ };
+                    dia.Comidas.Add(existingComida);
+                }
+
+                var fullText = string.Join("\n", foodLines);
+                ParseFoodItems(existingComida, fullText);
+            }
+        }
+    }
+
+    private static List<(int diaNum, double xLeft, double xCenter)> FindDiaHeaders(List<Word> words)
+    {
+        var result = new List<(int diaNum, double xLeft, double xCenter)>();
+
+        for (int i = 0; i < words.Count; i++)
+        {
+            var w = words[i];
+            if (!Regex.IsMatch(w.Text, @"^DIA$|^D[ÍI]A$", RegexOptions.IgnoreCase))
+                continue;
+
+            for (int j = i + 1; j < Math.Min(i + 5, words.Count); j++)
+            {
+                var next = words[j];
+                if (Math.Abs(next.BoundingBox.Bottom - w.BoundingBox.Bottom) > 15)
+                    continue;
+
+                if (int.TryParse(next.Text, out var num) && num >= 1 && num <= 7)
+                {
+                    var xCenter = (w.BoundingBox.Left + next.BoundingBox.Right) / 2;
+                    if (!result.Any(r => r.diaNum == num))
+                        result.Add((num, w.BoundingBox.Left, xCenter));
+                    break;
+                }
+            }
+        }
+
+        return result.OrderBy(r => r.xLeft).ToList();
+    }
+
+    private static List<(TipoComida tipo, double yCenter, double xCenter)> FindMealLabels(List<Word> words)
+    {
+        var result = new List<(TipoComida tipo, double yCenter, double xCenter)>();
+        var processed = new HashSet<int>();
+
+        // Find "PRE DESAYUNO" (two words)
+        for (int i = 0; i < words.Count; i++)
+        {
+            if (processed.Contains(i)) continue;
+            var w = words[i];
+
+            if (Regex.IsMatch(w.Text, @"^PRE$", RegexOptions.IgnoreCase))
+            {
+                for (int j = i + 1; j < Math.Min(i + 4, words.Count); j++)
+                {
+                    if (Math.Abs(words[j].BoundingBox.Bottom - w.BoundingBox.Bottom) > 20)
+                        continue;
+                    if (Regex.IsMatch(words[j].Text, @"^DESAYUNO$", RegexOptions.IgnoreCase))
+                    {
+                        var yc = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                        var xc = (w.BoundingBox.Left + words[j].BoundingBox.Right) / 2;
+                        result.Add((TipoComida.PreDesayuno, yc, xc));
+                        processed.Add(i);
+                        processed.Add(j);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Find single-word meal types
+        for (int i = 0; i < words.Count; i++)
+        {
+            if (processed.Contains(i)) continue;
+            var w = words[i];
+            var text = w.Text.Trim();
+
+            foreach (var (pattern, tipo) in MealPatterns)
+            {
+                if (pattern.Contains("\\s")) continue;
+                if (Regex.IsMatch(text, $@"^{pattern}$", RegexOptions.IgnoreCase))
+                {
+                    var yc = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                    var xc = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                    result.Add((tipo, yc, xc));
+                    processed.Add(i);
+                    break;
+                }
+            }
+        }
+
+        // Deduplicate: keep one label per meal type per distinct Y band
+        var deduped = result
+            .GroupBy(r => r.tipo)
+            .SelectMany(g =>
+            {
+                var sorted = g.OrderByDescending(r => r.yCenter).ToList();
+                var unique = new List<(TipoComida tipo, double yCenter, double xCenter)>();
+                foreach (var item in sorted)
+                {
+                    if (!unique.Any(u => Math.Abs(u.yCenter - item.yCenter) < 30))
+                        unique.Add(item);
+                }
+                return unique;
+            })
+            .ToList();
+
+        return deduped;
+    }
+
+    private static List<string> GroupWordsIntoLines(List<Word> words)
+    {
+        if (words.Count == 0) return new List<string>();
+
+        return words
+            .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
+            .OrderByDescending(g => g.Key)
+            .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim())
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .ToList();
+    }
+
+    private static void ParseFoodItems(Comida comida, string texto)
+    {
+        var lines = texto.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var rawLine in lines)
+        {
+            var line = Regex.Replace(rawLine, @"^[\-•\*\s]+", "").Trim();
+            if (string.IsNullOrWhiteSpace(line) || line.Length < 2) continue;
+            if (IsNoiseLine(line)) continue;
+            if (IsMealTypeHeader(line)) continue;
+
+            var items = Regex.Split(line, @"[•]");
+            foreach (var item in items)
+            {
+                var cleaned = item.Trim().Trim('-', '*', ' ');
+                if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length < 2) continue;
+                if (IsMealTypeHeader(cleaned)) continue;
+
+                var (nombre, cantidad) = ParseAlimento(cleaned);
+                if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
+
+                if (!comida.Alimentos.Any(a => a.Nombre.Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+                {
+                    comida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
                 }
             }
         }
     }
 
-    private static (string nombre, string? cantidad) ParsearAlimento(string linea)
+    private static (string nombre, string? cantidad) ParseAlimento(string linea)
     {
         linea = linea.Trim().Trim('-', '•', '*', ' ');
 
-        // Pattern: "HARINA DE AVENA 100G" or "HARINA DE AVENA- 100G"
+        // "HARINA DE AVENA- 100G"
         var matchSuffix = Regex.Match(linea,
             @"^(.+?)\s*[\-–]?\s*(\d+\s*(?:g|gr|mg|kg|ml|l|cl|ud|unidades?|rebanadas?|cucharadas?|vasos?|tazas?|piezas?|latas?))\s*$",
             RegexOptions.IgnoreCase);
         if (matchSuffix.Success)
             return (matchSuffix.Groups[1].Value.Trim(), matchSuffix.Groups[2].Value.Trim());
 
-        // Pattern: "PROTEINA WHEY 20G" - food name with quantity embedded
+        // "PROTEINA WHEY 20G"
         var matchEmbedded = Regex.Match(linea,
             @"^(.+?)\s+(\d+\s*(?:G|GR|MG|KG|ML|L|CL))\b(.*)$",
             RegexOptions.IgnoreCase);
@@ -383,24 +375,152 @@ public class PdfImportService : IPdfImportService
             var nombre = matchEmbedded.Groups[1].Value.Trim();
             var cantidad = matchEmbedded.Groups[2].Value.Trim();
             var extra = matchEmbedded.Groups[3].Value.Trim();
-            if (!string.IsNullOrWhiteSpace(extra))
+            if (!string.IsNullOrWhiteSpace(extra) && !Regex.IsMatch(extra, @"^\s*[\(\)]"))
                 nombre += " " + extra;
             return (nombre, cantidad);
         }
 
-        // Pattern: "2 UNIDADES" or "3 REBANADAS (60G)"
+        // "2 UNIDADES de X"
         var matchPrefix = Regex.Match(linea,
             @"^(\d+\s*(?:unidades?|rebanadas?|cucharadas?|latas?|rodajas?))\s+(?:de\s+)?(.+)$",
             RegexOptions.IgnoreCase);
         if (matchPrefix.Success)
             return (matchPrefix.Groups[2].Value.Trim(), matchPrefix.Groups[1].Value.Trim());
 
-        // Pattern with parentheses: "PAN DE MOLDE INTEGRAL 3 REBANADAS (60G)"
+        // "PAN (60G)"
         var matchParen = Regex.Match(linea, @"^(.+?)\s*\((.+?)\)\s*$");
         if (matchParen.Success)
             return (matchParen.Groups[1].Value.Trim(), matchParen.Groups[2].Value.Trim());
 
         return (linea.Trim(), null);
+    }
+
+    /// <summary>
+    /// Parse the "Día off" section (plain text, not table)
+    /// </summary>
+    private static void ParseDiaOff(string texto, Dieta dieta)
+    {
+        var match = Regex.Match(texto, @"D[ií]a\s+off[^:]*:", RegexOptions.IgnoreCase);
+        if (!match.Success) return;
+        if (dieta.Dias.Any(d => d.DiaSemana == DayOfWeek.Sunday)) return;
+
+        var diaOff = new DietaDia
+        {
+            DiaSemana = DayOfWeek.Sunday,
+            Nota = "Día de descanso"
+        };
+
+        var section = texto[match.Index..];
+        var lines = section.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        Comida? comidaActual = null;
+        int orden = 0;
+
+        foreach (var rawLine in lines.Skip(1))
+        {
+            var line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (Regex.IsMatch(line, @"suplementaci[oó]n", RegexOptions.IgnoreCase)) break;
+
+            var mealMatch = Regex.Match(line, @"^-?\s*(desayuno|almuerzo|comida|merienda|cena)\s*:\s*(.*)$", RegexOptions.IgnoreCase);
+            if (mealMatch.Success)
+            {
+                var tipoStr = mealMatch.Groups[1].Value.ToLowerInvariant();
+                var tipo = tipoStr switch
+                {
+                    "desayuno" => TipoComida.Desayuno,
+                    "almuerzo" => TipoComida.Almuerzo,
+                    "comida" => TipoComida.Comida,
+                    "merienda" => TipoComida.Merienda,
+                    "cena" => TipoComida.Cena,
+                    _ => TipoComida.Comida
+                };
+
+                comidaActual = new Comida { Tipo = tipo, Orden = orden++ };
+                diaOff.Comidas.Add(comidaActual);
+
+                var resto = mealMatch.Groups[2].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(resto))
+                    ParseDiaOffFoodLine(comidaActual, resto);
+                continue;
+            }
+
+            if (comidaActual != null && !string.IsNullOrWhiteSpace(line))
+                ParseDiaOffFoodLine(comidaActual, line);
+        }
+
+        // "Cena: IGUAL A LOS DÍAS DE ACTIVIDAD FÍSICA"
+        var cena = diaOff.Comidas.FirstOrDefault(c => c.Tipo == TipoComida.Cena);
+        if (cena != null && cena.Alimentos.Count == 0)
+        {
+            var otraCena = dieta.Dias
+                .SelectMany(d => d.Comidas)
+                .FirstOrDefault(c => c.Tipo == TipoComida.Cena && c.Alimentos.Count > 0);
+            if (otraCena != null)
+            {
+                foreach (var al in otraCena.Alimentos)
+                    cena.Alimentos.Add(new Alimento { Nombre = al.Nombre, Cantidad = al.Cantidad });
+            }
+        }
+
+        if (diaOff.Comidas.Count > 0)
+            dieta.Dias.Add(diaOff);
+    }
+
+    private static void ParseDiaOffFoodLine(Comida comida, string line)
+    {
+        var items = Regex.Split(line, @"\s*\+\s*");
+        foreach (var item in items)
+        {
+            var cleaned = item.Trim().Trim('-', '•', '*');
+            if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length < 2) continue;
+
+            if (Regex.IsMatch(cleaned, @"\s+o\s+", RegexOptions.IgnoreCase))
+            {
+                var alternatives = Regex.Split(cleaned, @"\s+o\s+", RegexOptions.IgnoreCase);
+                foreach (var alt in alternatives)
+                    AddFoodItem(comida, alt.Trim());
+                continue;
+            }
+
+            if (Regex.IsMatch(cleaned, @"igual\s+a\s+los", RegexOptions.IgnoreCase))
+                continue;
+
+            AddFoodItem(comida, cleaned);
+        }
+    }
+
+    private static void AddFoodItem(Comida comida, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length < 2) return;
+        var (nombre, cantidad) = ParseAlimento(text);
+        if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) return;
+        if (!comida.Alimentos.Any(a => a.Nombre.Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+            comida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
+    }
+
+    private static string ExtractPlainText(List<Page> pages)
+    {
+        var allLines = new List<string>();
+        foreach (var page in pages)
+        {
+            var words = page.GetWords().ToList();
+            if (words.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(page.Text))
+                    allLines.Add(page.Text);
+                continue;
+            }
+
+            var lines = words
+                .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
+                .OrderByDescending(g => g.Key)
+                .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim())
+                .Where(l => !string.IsNullOrWhiteSpace(l));
+
+            allLines.AddRange(lines);
+        }
+        return string.Join("\n", allLines);
     }
 
     private static bool IsNoiseLine(string linea)
@@ -409,9 +529,22 @@ public class PdfImportService : IPdfImportService
         if (l.Length < 2) return true;
         if (Regex.IsMatch(l, @"^(ingesta|ingredientes|rganutri|plan\s+nutricional|cuestionario|gasto\s+energ|necesidades\s+h[ií]dricas|datos\s+antropom|check\s+inicial|fecha|cita|peso|talla|perfil|espalda|manu)\b"))
             return true;
-        if (Regex.IsMatch(l, @"^[\d\.\…]+$")) return true; // Page numbers
+        if (Regex.IsMatch(l, @"^[\d\.\…]+$")) return true;
         if (Regex.IsMatch(l, @"^entrenamiento\s+de\s+", RegexOptions.IgnoreCase)) return true;
-        if (l == "café" || l == "cafe") return false; // Keep café as food
+        if (Regex.IsMatch(l, @"^dia\s+de\s+descanso$", RegexOptions.IgnoreCase)) return true;
+        if (Regex.IsMatch(l, @"^d[ií]a\s+\d+$", RegexOptions.IgnoreCase)) return true;
+        return false;
+    }
+
+    private static bool IsMealTypeHeader(string linea)
+    {
+        var l = linea.Trim().ToLowerInvariant();
+        l = Regex.Replace(l, @"^[\-•\*\s]+", "");
+        foreach (var (pattern, _) in MealPatterns)
+        {
+            if (Regex.IsMatch(l, $@"^{pattern}$", RegexOptions.IgnoreCase))
+                return true;
+        }
         return false;
     }
 }

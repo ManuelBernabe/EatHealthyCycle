@@ -416,5 +416,17 @@ body {
 .badge-success { background: var(--primary-light); color: var(--primary-dark); }
 .badge-danger { background: #FFCDD2; color: var(--danger); }
 
+/* --- Delete item button --- */
+.btn-delete-item {
+    background: none;
+    border: none;
+    color: var(--danger);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
 /* --- Admin --- */
 .admin-list { padding-bottom: 16px; }

@@ -213,6 +213,20 @@ const App = {
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
+    async crearPlanManual() {
+        const nombre = document.getElementById('manual-plan-name').value;
+        const fecha = document.getElementById('manual-plan-date').value;
+        if (!nombre || !fecha) return this.toast('Completa todos los campos', 'error');
+        try {
+            await API.crearPlanManual(API.user.id, nombre, fecha);
+            this.toast('Plan manual creado');
+            this.closeModal('modal-plan-manual');
+            this.loadDashboard();
+            this.showPage('plan');
+            this.loadPlan();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
     // --- PLAN SEMANAL ---
     async loadPlan() {
         const uid = API.user?.id;
@@ -276,6 +290,7 @@ const App = {
                                     ${c.completada ? '✓' : ''}
                                 </div>
                                 <span class="meal-text ${c.completada ? 'completed' : ''}">${c.descripcion}</span>
+                                <button class="btn-delete-item" onclick="App.deleteMeal(${c.id})">&times;</button>
                             </div>
                         `).join('')}
                     </div>
@@ -286,7 +301,10 @@ const App = {
         document.getElementById('plan-content').innerHTML = `
             <div class="day-tabs">${tabsHtml}</div>
             ${mealsHtml}
-            <div style="padding:16px;">
+            <div style="padding:12px 16px;">
+                <button class="btn btn-outline btn-sm" onclick="App.openAddMealModal(${dia.id})">+ Añadir comida</button>
+            </div>
+            <div style="padding:4px 16px 16px;">
                 <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
             </div>
         `;
@@ -303,6 +321,33 @@ const App = {
             el.classList.toggle('checked');
             el.innerHTML = res.completada ? '✓' : '';
             el.nextElementSibling.classList.toggle('completed');
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    openAddMealModal(planDiaId) {
+        document.getElementById('add-meal-plandia-id').value = planDiaId;
+        document.getElementById('add-meal-desc').value = '';
+        this.openModal('modal-add-meal');
+    },
+
+    async addMealToPlan() {
+        const planDiaId = document.getElementById('add-meal-plandia-id').value;
+        const tipo = document.getElementById('add-meal-tipo').value;
+        const descripcion = document.getElementById('add-meal-desc').value;
+        if (!descripcion) return this.toast('Escribe una descripción', 'error');
+        try {
+            await API.addComidaPlan(planDiaId, tipo, descripcion);
+            this.toast('Comida añadida');
+            this.closeModal('modal-add-meal');
+            this.loadPlan();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async deleteMeal(id) {
+        if (!confirm('¿Eliminar esta comida?')) return;
+        try {
+            await API.deleteComidaPlan(id);
+            this.loadPlan();
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
@@ -373,6 +418,8 @@ const App = {
     },
 
     // --- LISTA COMPRA ---
+    currentPlanIdForCompra: null,
+
     async loadCompra() {
         const uid = API.user?.id;
         if (!uid) return;
@@ -386,33 +433,86 @@ const App = {
             }
 
             const planId = planes[0].id;
+            this.currentPlanIdForCompra = planId;
             let items = await API.obtenerListaCompra(planId);
 
             if (items.length === 0) {
-                // Generate it
                 items = await API.generarListaCompra(planId);
             }
 
-            if (items.length === 0) {
-                container.innerHTML = '<div class="empty-state"><p>No hay items en la lista</p></div>';
-                return;
-            }
+            this.renderCompra(items);
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
 
-            let html = '';
-            let currentCat = '';
-            for (const item of items) {
-                if (item.categoria && item.categoria !== currentCat) {
-                    currentCat = item.categoria;
-                    html += `<div class="shop-category">${currentCat}</div>`;
-                }
-                html += `
-                    <div class="shop-item ${item.comprado ? 'bought' : ''}" onclick="App.toggleComprado(${item.id}, this)">
-                        <div class="meal-check ${item.comprado ? 'checked' : ''}">${item.comprado ? '✓' : ''}</div>
-                        <span class="name">${item.nombre}</span>
-                        <span class="qty">${item.cantidad || ''}</span>
-                    </div>`;
-            }
+    renderCompra(items) {
+        const container = document.getElementById('compra-content');
+
+        // Add item form
+        let html = `
+            <div class="card" style="margin:12px 16px;">
+                <div style="display:flex;gap:8px;align-items:flex-end;">
+                    <div style="flex:1;">
+                        <input type="text" id="new-compra-nombre" placeholder="Añadir artículo..." style="width:100%;padding:10px;border:2px solid var(--border);border-radius:8px;font-size:14px;">
+                    </div>
+                    <div style="width:80px;">
+                        <input type="text" id="new-compra-cantidad" placeholder="Cant." style="width:100%;padding:10px;border:2px solid var(--border);border-radius:8px;font-size:14px;">
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="App.addItemCompra()" style="white-space:nowrap;">+</button>
+                </div>
+            </div>
+            <div style="padding:8px 16px;">
+                <button class="btn btn-outline btn-sm" onclick="App.regenerarCompra()">Regenerar lista</button>
+            </div>`;
+
+        if (items.length === 0) {
+            html += '<div class="empty-state"><p>No hay items en la lista</p></div>';
             container.innerHTML = html;
+            return;
+        }
+
+        let currentCat = '';
+        for (const item of items) {
+            if (item.categoria && item.categoria !== currentCat) {
+                currentCat = item.categoria;
+                html += `<div class="shop-category">${currentCat}</div>`;
+            }
+            html += `
+                <div class="shop-item ${item.comprado ? 'bought' : ''}">
+                    <div class="meal-check ${item.comprado ? 'checked' : ''}" onclick="App.toggleComprado(${item.id}, this.parentElement)">${item.comprado ? '✓' : ''}</div>
+                    <span class="name" onclick="App.toggleComprado(${item.id}, this.parentElement)">${item.nombre}</span>
+                    <span class="qty">${item.cantidad || ''}</span>
+                    <button class="btn-delete-item" onclick="event.stopPropagation();App.deleteItemCompra(${item.id})">&times;</button>
+                </div>`;
+        }
+        container.innerHTML = html;
+    },
+
+    async addItemCompra() {
+        const nombre = document.getElementById('new-compra-nombre').value.trim();
+        const cantidad = document.getElementById('new-compra-cantidad').value.trim();
+        if (!nombre) return this.toast('Escribe un artículo', 'error');
+        if (!this.currentPlanIdForCompra) return;
+        try {
+            await API.addItemCompra(this.currentPlanIdForCompra, nombre, cantidad || null, null);
+            document.getElementById('new-compra-nombre').value = '';
+            document.getElementById('new-compra-cantidad').value = '';
+            this.loadCompra();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async deleteItemCompra(id) {
+        try {
+            await API.deleteItemCompra(id);
+            this.loadCompra();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async regenerarCompra() {
+        if (!this.currentPlanIdForCompra) return;
+        try {
+            const items = await API.generarListaCompra(this.currentPlanIdForCompra);
+            this.renderCompra(items);
+            this.toast('Lista regenerada');
         } catch (e) { this.toast(e.message, 'error'); }
     },
 

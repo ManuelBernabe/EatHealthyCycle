@@ -8,6 +8,7 @@ public class ItemListaCompra
     public string? Cantidad { get; set; }
     public string? Categoria { get; set; }
     public bool Comprado { get; set; }
+    public bool EsManual { get; set; }
 
     public PlanSemanal PlanSemanal { get; set; } = null!;
 }

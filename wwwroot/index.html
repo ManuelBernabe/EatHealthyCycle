@@ -105,7 +105,10 @@
     <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
             <div class="card-title">Mis Dietas</div>
-            <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">+ Importar PDF</button>
+            <div style="display:flex;gap:6px;">
+                <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">+ PDF</button>
+                <button class="btn btn-accent btn-sm" onclick="App.openModal('modal-plan-manual')">+ Plan Manual</button>
+            </div>
         </div>
         <div id="dietas-list"></div>
     </div>
@@ -252,6 +255,49 @@
             <input type="file" id="diet-file" accept=".pdf">
         </div>
         <button class="btn btn-primary" onclick="App.importarDieta()">Importar</button>
+    </div>
+</div>
+
+<!-- Manual Plan Modal -->
+<div id="modal-plan-manual" class="modal-overlay" onclick="if(event.target===this)App.closeModal('modal-plan-manual')">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h3>Crear Plan Manual</h3>
+        <div class="form-group">
+            <label>Nombre del plan</label>
+            <input type="text" id="manual-plan-name" placeholder="Ej: Plan Semana 1">
+        </div>
+        <div class="form-group">
+            <label>Fecha de inicio (lunes)</label>
+            <input type="date" id="manual-plan-date">
+        </div>
+        <button class="btn btn-primary" onclick="App.crearPlanManual()">Crear Plan</button>
+    </div>
+</div>
+
+<!-- Add Meal Modal -->
+<div id="modal-add-meal" class="modal-overlay" onclick="if(event.target===this)App.closeModal('modal-add-meal')">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h3>Añadir Comida</h3>
+        <input type="hidden" id="add-meal-plandia-id">
+        <div class="form-group">
+            <label>Tipo</label>
+            <select id="add-meal-tipo">
+                <option value="PreDesayuno">Pre Desayuno</option>
+                <option value="Desayuno">Desayuno</option>
+                <option value="MediaManana">Media Mañana</option>
+                <option value="Almuerzo">Almuerzo</option>
+                <option value="Comida">Comida</option>
+                <option value="Merienda">Merienda</option>
+                <option value="Cena">Cena</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Descripción</label>
+            <input type="text" id="add-meal-desc" placeholder="Ej: Pollo a la plancha 200g, Arroz 150g">
+        </div>
+        <button class="btn btn-primary" onclick="App.addMealToPlan()">Añadir</button>
     </div>
 </div>
 

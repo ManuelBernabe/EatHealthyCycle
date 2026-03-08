@@ -3,6 +3,7 @@ using System;
 using EatHealthyCycle.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EatHealthyCycle.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260308162550_AddEsManualToItemListaCompra")]
+    partial class AddEsManualToItemListaCompra
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "8.0.24");
@@ -215,7 +218,7 @@ namespace EatHealthyCycle.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<int?>("DietaId")
+                    b.Property<int>("DietaId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("FechaCreacion")
@@ -440,7 +443,9 @@ namespace EatHealthyCycle.Migrations
                 {
                     b.HasOne("EatHealthyCycle.Models.Dieta", "Dieta")
                         .WithMany()
-                        .HasForeignKey("DietaId");
+                        .HasForeignKey("DietaId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.HasOne("EatHealthyCycle.Models.Usuario", "Usuario")
                         .WithMany("PlanesSemanal")

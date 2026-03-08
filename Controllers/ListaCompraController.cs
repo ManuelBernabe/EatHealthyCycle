@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EatHealthyCycle.Data;
 using EatHealthyCycle.DTOs;
+using EatHealthyCycle.Models;
 using EatHealthyCycle.Services.Interfaces;
 
 namespace EatHealthyCycle.Controllers;
@@ -28,8 +29,7 @@ public class ListaCompraController : ControllerBase
         if (plan == null) return NotFound();
 
         var items = await _listaCompra.GenerarListaCompraAsync(planId);
-
-        return items.Select(i => new ItemListaCompraDto(i.Id, i.Nombre, i.Cantidad, i.Categoria, i.Comprado)).ToList();
+        return items.Select(i => new ItemListaCompraDto(i.Id, i.Nombre, i.Cantidad, i.Categoria, i.Comprado, i.EsManual)).ToList();
     }
 
     [HttpGet("planes/{planId}/lista-compra")]
@@ -39,9 +39,8 @@ public class ListaCompraController : ControllerBase
             .Where(i => i.PlanSemanalId == planId)
             .OrderBy(i => i.Categoria)
             .ThenBy(i => i.Nombre)
-            .Select(i => new ItemListaCompraDto(i.Id, i.Nombre, i.Cantidad, i.Categoria, i.Comprado))
+            .Select(i => new ItemListaCompraDto(i.Id, i.Nombre, i.Cantidad, i.Categoria, i.Comprado, i.EsManual))
             .ToListAsync();
-
         return items;
     }
 
@@ -54,6 +53,39 @@ public class ListaCompraController : ControllerBase
         item.Comprado = !item.Comprado;
         await _db.SaveChangesAsync();
 
-        return Ok(new ItemListaCompraDto(item.Id, item.Nombre, item.Cantidad, item.Categoria, item.Comprado));
+        return Ok(new ItemListaCompraDto(item.Id, item.Nombre, item.Cantidad, item.Categoria, item.Comprado, item.EsManual));
+    }
+
+    [HttpPost("planes/{planId}/lista-compra/item")]
+    public async Task<ActionResult<ItemListaCompraDto>> AddItem(int planId, AddItemListaCompraRequest request)
+    {
+        var plan = await _db.PlanesSemanal.FindAsync(planId);
+        if (plan == null) return NotFound();
+
+        var item = new ItemListaCompra
+        {
+            PlanSemanalId = planId,
+            Nombre = request.Nombre,
+            Cantidad = request.Cantidad,
+            Categoria = request.Categoria ?? "Otros",
+            EsManual = true
+        };
+
+        _db.ItemsListaCompra.Add(item);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ItemListaCompraDto(item.Id, item.Nombre, item.Cantidad, item.Categoria, item.Comprado, item.EsManual));
+    }
+
+    [HttpDelete("lista-compra/{itemId}")]
+    public async Task<IActionResult> DeleteItem(int itemId)
+    {
+        var item = await _db.ItemsListaCompra.FindAsync(itemId);
+        if (item == null) return NotFound();
+
+        _db.ItemsListaCompra.Remove(item);
+        await _db.SaveChangesAsync();
+
+        return NoContent();
     }
 }
