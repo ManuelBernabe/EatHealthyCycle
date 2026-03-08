@@ -54,10 +54,15 @@ public class ImageImportService : IImageImportService
                 await imageStream.CopyToAsync(fs);
             }
 
+            _logger.LogInformation("Image saved to temp: {Path}, size: {Size} bytes, contentType: {CT}",
+                tempImage, new FileInfo(tempImage).Length, contentType);
+
             var words = await RunTesseractAsync(tempImage);
 
             if (words.Count == 0)
-                throw new InvalidOperationException("No se pudo extraer texto de la imagen. Asegúrate de que la imagen sea legible.");
+                throw new InvalidOperationException(
+                    "Tesseract OCR no pudo extraer texto de la imagen. " +
+                    "Prueba con una imagen de mayor resolución o mejor calidad.");
 
             _logger.LogInformation("Tesseract extracted {Count} words from image", words.Count);
 
@@ -91,52 +96,81 @@ public class ImageImportService : IImageImportService
                 CreateNoWindow = true
             };
 
-            using var process = Process.Start(psi)
-                ?? throw new InvalidOperationException(
-                    "No se pudo iniciar Tesseract OCR. Instálalo con: apt-get install tesseract-ocr tesseract-ocr-spa");
+            _logger.LogInformation("Running Tesseract on image: {Path} (size: {Size} bytes)",
+                imagePath, new FileInfo(imagePath).Length);
 
+            Process? startedProcess = null;
+            try
+            {
+                startedProcess = Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to start tesseract process");
+                throw new InvalidOperationException(
+                    "Tesseract OCR no está instalado en el servidor. Contacta al administrador.");
+            }
+
+            if (startedProcess == null)
+                throw new InvalidOperationException("No se pudo iniciar Tesseract OCR.");
+
+            using var process = startedProcess;
             var stderr = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
+            _logger.LogInformation("Tesseract exit code: {Code}, stderr: {Err}",
+                process.ExitCode, stderr.Length > 500 ? stderr[..500] : stderr);
+
             if (process.ExitCode != 0)
             {
-                _logger.LogWarning("Tesseract with spa failed: {Error}, retrying with eng", stderr);
+                _logger.LogWarning("Tesseract with spa failed (exit {Code}): {Error}, retrying with eng",
+                    process.ExitCode, stderr);
                 // Retry with English
                 psi.Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l eng --psm 3 tsv";
                 using var process2 = Process.Start(psi)!;
-                stderr = await process2.StandardError.ReadToEndAsync();
+                var stderr2 = await process2.StandardError.ReadToEndAsync();
                 await process2.WaitForExitAsync();
+
+                _logger.LogInformation("Tesseract eng exit code: {Code}, stderr: {Err}",
+                    process2.ExitCode, stderr2.Length > 500 ? stderr2[..500] : stderr2);
 
                 if (process2.ExitCode != 0)
                 {
-                    _logger.LogError("Tesseract error: {Error}", stderr);
-                    throw new InvalidOperationException($"Tesseract OCR falló: {stderr}");
+                    _logger.LogError("Tesseract error: {Error}", stderr2);
+                    throw new InvalidOperationException($"Tesseract OCR falló: {stderr2}");
                 }
             }
 
             var tsvFile = tsvOutput + ".tsv";
             if (!File.Exists(tsvFile))
+            {
+                _logger.LogError("TSV file not found at {Path}", tsvFile);
                 throw new InvalidOperationException("Tesseract no generó archivo de salida");
+            }
 
             var lines = await File.ReadAllLinesAsync(tsvFile);
+            _logger.LogInformation("TSV file has {Lines} lines (including header)", lines.Length);
+
             var words = new List<OcrWord>();
+            var skippedLowConf = 0;
+            var skippedParse = 0;
 
             // TSV: level page_num block_num par_num line_num word_num left top width height conf text
             foreach (var line in lines.Skip(1))
             {
                 var parts = line.Split('\t');
-                if (parts.Length < 12) continue;
+                if (parts.Length < 12) { skippedParse++; continue; }
 
                 var text = parts[11].Trim();
                 if (string.IsNullOrWhiteSpace(text)) continue;
 
-                if (!int.TryParse(parts[6], out var left)) continue;
-                if (!int.TryParse(parts[7], out var top)) continue;
-                if (!int.TryParse(parts[8], out var width)) continue;
-                if (!int.TryParse(parts[9], out var height)) continue;
-                if (!int.TryParse(parts[10], out var conf)) continue;
+                if (!int.TryParse(parts[6], out var left)) { skippedParse++; continue; }
+                if (!int.TryParse(parts[7], out var top)) { skippedParse++; continue; }
+                if (!int.TryParse(parts[8], out var width)) { skippedParse++; continue; }
+                if (!int.TryParse(parts[9], out var height)) { skippedParse++; continue; }
+                if (!int.TryParse(parts[10], out var conf)) { skippedParse++; continue; }
 
-                if (conf >= 0 && conf < 15) continue; // skip very low confidence
+                if (conf >= 0 && conf < 10) { skippedLowConf++; continue; } // skip very low confidence
 
                 words.Add(new OcrWord
                 {
@@ -154,6 +188,15 @@ public class ImageImportService : IImageImportService
                     LineNum = int.TryParse(parts[4], out var l) ? l : 0,
                     ParNum = int.TryParse(parts[3], out var p) ? p : 0
                 });
+            }
+
+            _logger.LogInformation("OCR results: {Words} words extracted, {SkippedConf} low-confidence, {SkippedParse} parse errors",
+                words.Count, skippedLowConf, skippedParse);
+
+            if (words.Count > 0)
+            {
+                var sampleWords = words.Take(30).Select(w => $"'{w.Text}'({w.Confidence})");
+                _logger.LogInformation("Sample words: {Sample}", string.Join(", ", sampleWords));
             }
 
             return words;
