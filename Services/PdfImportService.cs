@@ -117,29 +117,31 @@ public class PdfImportService : IPdfImportService
     }
 
     /// <summary>
-    /// Check if a word is a bullet/symbol character.
-    /// PdfPig extracts Wingdings bullets as Private Use Area chars (U+F0B7 etc.)
-    /// Also detects bullets attached to words (e.g., "•HARINA").
+    /// Check if a word is a PURE bullet/symbol character (should be completely removed).
+    /// Only matches words that are entirely non-alphanumeric (1-2 chars).
     /// </summary>
     private static bool IsBulletWord(Word word)
     {
         var text = word.Text.Trim();
         if (text.Length == 0) return false;
+        if (text.Length > 2) return false;
+        return text.All(c => !char.IsLetterOrDigit(c));
+    }
 
-        // Pure symbol word (1-2 non-alphanumeric chars)
-        if (text.Length <= 2 && text.All(c => !char.IsLetterOrDigit(c)))
-            return true;
-
-        // First char is a PUA symbol or bullet attached to text
-        if (text.Length > 0)
-        {
-            var first = text[0];
-            if (first >= '\uF000' && first <= '\uF0FF') return true; // PUA (Wingdings)
-            if (first == '•' || first == '●' || first == '○' || first == '■' || first == '□')
-                return true;
-        }
-
-        return false;
+    /// <summary>
+    /// Check if a word starts with a bullet character (for line-start detection).
+    /// Includes pure bullet words AND words with bullet prefix attached to text.
+    /// </summary>
+    private static bool StartsWithBullet(Word word)
+    {
+        var text = word.Text.Trim();
+        if (text.Length == 0) return false;
+        if (IsBulletWord(word)) return true;
+        var first = text[0];
+        return (first >= '\uF000' && first <= '\uF0FF') || // PUA (Wingdings)
+               first == '•' || first == '●' || first == '○' ||
+               first == '■' || first == '□' || first == '–' ||
+               (!char.IsLetterOrDigit(first) && !char.IsWhiteSpace(first) && first != '(' && first != '-');
     }
 
     // ==================== TABLE PAGE PROCESSING ====================
@@ -363,6 +365,8 @@ public class PdfImportService : IPdfImportService
                     var (nombre, cantidad) = ParseAlimento(foodText);
                     nombre = CleanText(nombre).Trim();
                     if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
+                    // Skip noise that got through earlier filters
+                    if (IsNoiseLine(nombre)) continue;
 
                     if (!existingComida.Alimentos.Any(a =>
                         CleanText(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
@@ -487,9 +491,10 @@ public class PdfImportService : IPdfImportService
         foreach (var lineWords in lineGroups)
         {
             var orderedWords = lineWords.OrderBy(w => w.BoundingBox.Left).ToList();
-            bool startsWithBullet = IsBulletWord(orderedWords[0]);
+            bool startsWithBullet = StartsWithBullet(orderedWords[0]);
             if (startsWithBullet) anyBullets = true;
 
+            // Only remove pure bullet words; CleanText will strip bullet chars from attached words
             var cleanedParts = orderedWords
                 .Where(w => !IsBulletWord(w))
                 .Select(w => CleanText(w.Text))
@@ -881,15 +886,21 @@ public class PdfImportService : IPdfImportService
         // Medication/supplement schedule noise
         if (l.Contains("masteron") || l.Contains("telmisartan") || l.Contains("ursobilane") ||
             l.Contains("cipionato") || l.Contains("capsula") || l.Contains("1ml") ||
-            l.Contains("enantate"))
+            l.Contains("enantate") || l.Contains("vitamina c") || l.Contains("omega 3"))
             return true;
         // Día off / supplement section text
         if (l.Contains("día off") || l.Contains("dia off") || l.Contains("no entreno") ||
-            l.Contains("igual a los") || l.Contains("actividad física") ||
-            l.Contains("suplementación") || l.Contains("suplementacion"))
+            l.Contains("igual a los") || l.Contains("actividad física") || l.Contains("actividad fisica") ||
+            l.Contains("suplementación") || l.Contains("suplementacion") ||
+            l.Contains("de dormir"))
             return true;
-        // Lines starting with "-Nac" or "-Desayuno" etc. (plain text day off format)
+        // Lines starting with "-" followed by meal names (Día off format: "-Desayuno ...", "-Comida ...")
         if (Regex.IsMatch(l, @"^-?\s*nac\b")) return true;
+        if (Regex.IsMatch(l, @"^-\s*(desayuno|almuerzo|comida|merienda|cena)\b")) return true;
+        // Long lines with mixed meal labels inside (typical of Día off / supplement blobs)
+        if (l.Length > 60) return true;
+        // Contains "+" as separator (supplement combinations: "proteína whey 40g+ canela")
+        if (l.Contains("+") && !Regex.IsMatch(l, @"^\d")) return true;
 
         return false;
     }

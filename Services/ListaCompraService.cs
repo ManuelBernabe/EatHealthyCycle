@@ -31,7 +31,7 @@ public class ListaCompraService : IListaCompraService
         "HERVIDO", "COCIDO", "FRESCO", "INTEGRAL", "NATURAL", "PASTEURIZADA",
         "PELADA", "PELADO", "DESGRASADO", "TOSTADO", "RALLADO",
         "REBANADAS", "UNIDADES", "LATAS", "RODAJAS", "CUCHARADAS",
-        "AÑADIR", "GUSTO"
+        "AÑADIR", "GUSTO", "YODADA", "SERRANO", "EMBUCHADO"
     };
 
     // Noise patterns - not real food items
@@ -144,61 +144,82 @@ public class ListaCompraService : IListaCompraService
     }
 
     /// <summary>
-    /// Join comma-separated fragments that belong together.
-    /// "PECHUGA DE, POLLO (200G)" → "PECHUGA DE POLLO (200G)"
-    /// "ARROZ INTEGRAL, HERVIDO (200G)" → "ARROZ INTEGRAL HERVIDO (200G)"
+    /// Join comma-separated fragments that belong together (both directions).
+    /// Forward: "PECHUGA DE, POLLO (200G)" → "PECHUGA DE POLLO (200G)"
+    /// Backward: "..., DE MOLDE INTEGRAL" joins with previous item
     /// </summary>
     private static List<string> JoinFragments(List<string> parts)
     {
         if (parts.Count <= 1) return parts;
 
-        var result = new List<string>();
+        // Pass 1: Forward join - items ending with preposition absorb next
+        var forward = new List<string>();
         int i = 0;
-
         while (i < parts.Count)
         {
             var current = parts[i].Trim();
             i++;
-
-            // Keep joining with next part if current ends with preposition
-            // or next part starts with a non-standalone word
             while (i < parts.Count)
             {
                 var next = parts[i].Trim();
-                var nextFirstWord = next.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .FirstOrDefault()?.ToUpperInvariant() ?? "";
-
-                bool shouldJoin = false;
-
-                // Current ends with preposition: "PECHUGA DE" + "POLLO"
-                var lastWord = current.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .LastOrDefault()?.ToUpperInvariant() ?? "";
-                if (Prepositions.Contains(lastWord))
-                    shouldJoin = true;
-
-                // Next starts with a modifier/adjective, not a food: "INTEGRAL" + "2 REBANADAS"
-                if (!shouldJoin && NotStandaloneFood.Contains(nextFirstWord))
-                    shouldJoin = true;
-
-                // Next is just a number + unit (quantity that belongs to current)
-                if (!shouldJoin && Regex.IsMatch(next.Trim(), @"^\d+\s*(g|gr|mg|kg|ml|l|cl)\b", RegexOptions.IgnoreCase))
-                    shouldJoin = true;
-
-                if (shouldJoin)
+                if (ShouldJoinForward(current, next))
                 {
                     current += " " + next;
                     i++;
                 }
-                else
-                {
-                    break;
-                }
+                else break;
             }
+            forward.Add(current);
+        }
 
-            result.Add(current);
+        // Pass 2: Backward join - items starting with preposition/article join with previous
+        var result = new List<string>();
+        foreach (var item in forward)
+        {
+            var trimmed = item.Trim();
+            if (result.Count > 0 && ShouldJoinBackward(trimmed))
+            {
+                result[^1] = result[^1] + " " + trimmed;
+            }
+            else
+            {
+                result.Add(trimmed);
+            }
         }
 
         return result;
+    }
+
+    private static bool ShouldJoinForward(string current, string next)
+    {
+        var lastWord = current.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault()?.ToUpperInvariant() ?? "";
+        var nextFirstWord = next.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault()?.ToUpperInvariant() ?? "";
+
+        // Current ends with preposition
+        if (Prepositions.Contains(lastWord)) return true;
+        // Next starts with modifier/adjective
+        if (NotStandaloneFood.Contains(nextFirstWord)) return true;
+        // Next is just a number + unit
+        if (Regex.IsMatch(next.Trim(), @"^\d+\s*(g|gr|mg|kg|ml|l|cl)\b", RegexOptions.IgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private static bool ShouldJoinBackward(string item)
+    {
+        var words = item.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return false;
+        var first = words[0].ToUpperInvariant();
+
+        // Starts with preposition: "DE MOLDE...", "CON CALCIO...", "AL NATURAL..."
+        if (Prepositions.Contains(first)) return true;
+        // Starts with standalone modifier: "HERVIDO (200G)", "INTEGRAL 2..."
+        if (NotStandaloneFood.Contains(first)) return true;
+
+        return false;
     }
 
     /// <summary>
