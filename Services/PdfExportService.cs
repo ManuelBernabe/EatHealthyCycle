@@ -21,9 +21,11 @@ public class PdfExportService : IPdfExportService
 
     private static readonly Dictionary<TipoComida, string> NombresComida = new()
     {
+        [TipoComida.PreDesayuno] = "Pre Desayuno",
         [TipoComida.Desayuno] = "Desayuno",
         [TipoComida.MediaManana] = "Media Mañana",
         [TipoComida.Almuerzo] = "Almuerzo",
+        [TipoComida.Comida] = "Comida",
         [TipoComida.Merienda] = "Merienda",
         [TipoComida.Cena] = "Cena"
     };
@@ -83,9 +85,11 @@ public class PdfExportService : IPdfExportService
                         var nombreTipo = NombresComida.GetValueOrDefault(tipo, tipo.ToString());
                         var bgColor = tipo switch
                         {
+                            TipoComida.PreDesayuno => Colors.Amber.Lighten4,
                             TipoComida.Desayuno => Colors.Orange.Lighten4,
                             TipoComida.MediaManana => Colors.Yellow.Lighten4,
                             TipoComida.Almuerzo => Colors.Green.Lighten4,
+                            TipoComida.Comida => Colors.Teal.Lighten4,
                             TipoComida.Merienda => Colors.Blue.Lighten4,
                             TipoComida.Cena => Colors.Purple.Lighten4,
                             _ => Colors.Grey.Lighten4

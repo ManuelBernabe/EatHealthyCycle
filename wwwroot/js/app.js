@@ -8,10 +8,19 @@ const App = {
         if (API.isLoggedIn()) {
             this.showPage('dashboard');
             this.loadDashboard();
+            this.updateAdminNav();
         } else {
             this.showPage('login');
         }
         this.bindNav();
+    },
+
+    updateAdminNav() {
+        const role = API.user?.role;
+        const adminBtn = document.querySelector('.nav-admin');
+        if (adminBtn) {
+            adminBtn.style.display = (role === 'Admin' || role === 'Superuser' || role === 'SuperUserMaster') ? 'flex' : 'none';
+        }
     },
 
     showPage(name) {
@@ -35,6 +44,8 @@ const App = {
                 if (page === 'plan') this.loadPlan();
                 if (page === 'peso') this.loadPeso();
                 if (page === 'compra') this.loadCompra();
+                if (page === 'perfil') this.loadPerfil();
+                if (page === 'admin') this.loadAdmin();
             });
         });
     },
@@ -61,6 +72,7 @@ const App = {
                 return;
             }
             API.setAuth(res.accessToken, res.refreshToken, res.user);
+            this.updateAdminNav();
             this.showPage('dashboard');
             this.loadDashboard();
             this.toast('Bienvenido ' + res.user.username);
@@ -226,16 +238,20 @@ const App = {
     renderPlan(plan) {
         const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
         const mealTypes = {
+            'PreDesayuno': 'predesayuno',
             'Desayuno': 'desayuno',
             'MediaManana': 'mediamanana',
             'Almuerzo': 'almuerzo',
+            'Comida': 'comida',
             'Merienda': 'merienda',
             'Cena': 'cena'
         };
         const mealNames = {
+            'PreDesayuno': 'Pre Desayuno',
             'Desayuno': 'Desayuno',
             'MediaManana': 'Media Mañana',
             'Almuerzo': 'Almuerzo',
+            'Comida': 'Comida',
             'Merienda': 'Merienda',
             'Cena': 'Cena'
         };
@@ -406,6 +422,219 @@ const App = {
             el.classList.toggle('bought');
             el.querySelector('.meal-check').classList.toggle('checked');
             el.querySelector('.meal-check').innerHTML = res.comprado ? '✓' : '';
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- PERFIL ---
+    async loadPerfil() {
+        try {
+            const info = await API.me();
+            document.getElementById('perfil-username').value = info.username;
+            document.getElementById('perfil-email').value = info.email || '';
+            document.getElementById('perfil-role').textContent = info.role;
+            this.load2FAStatus();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async guardarPerfil() {
+        const email = document.getElementById('perfil-email').value;
+        try {
+            await API.actualizarPerfil({ email });
+            this.toast('Perfil actualizado');
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async cambiarPassword() {
+        const currentPassword = document.getElementById('perfil-old-pass').value;
+        const newPassword = document.getElementById('perfil-new-pass').value;
+        if (!currentPassword || !newPassword) return this.toast('Rellena ambos campos', 'error');
+        try {
+            await API.cambiarPassword({ currentPassword, newPassword });
+            this.toast('Contraseña cambiada');
+            document.getElementById('perfil-old-pass').value = '';
+            document.getElementById('perfil-new-pass').value = '';
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async load2FAStatus() {
+        try {
+            const status = await API.get2FAStatus();
+            const container = document.getElementById('2fa-content');
+            if (status.enabled) {
+                container.innerHTML = `
+                    <p style="color:var(--success);font-weight:600;margin-bottom:12px;">2FA Activado</p>
+                    <div class="form-group">
+                        <label>Contraseña para desactivar</label>
+                        <input type="password" id="2fa-disable-pass" placeholder="Tu contraseña">
+                    </div>
+                    <button class="btn btn-danger" onclick="App.disable2FA()">Desactivar 2FA</button>`;
+            } else {
+                container.innerHTML = `
+                    <p style="color:var(--text-secondary);margin-bottom:12px;">2FA no está activado</p>
+                    <button class="btn btn-primary" onclick="App.setup2FA()">Activar 2FA</button>
+                    <div id="2fa-setup-area"></div>`;
+            }
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async setup2FA() {
+        try {
+            const result = await API.setup2FA();
+            document.getElementById('2fa-setup-area').innerHTML = `
+                <div class="card" style="margin-top:12px;">
+                    <p style="font-size:13px;margin-bottom:8px;">Escanea este código QR o introduce la clave manualmente:</p>
+                    <div style="text-align:center;margin:12px 0;">
+                        <img src="https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(result.otpAuthUri)}&size=200x200" alt="QR Code" style="border-radius:8px;">
+                    </div>
+                    <p style="font-size:12px;word-break:break-all;background:var(--bg);padding:8px;border-radius:4px;">${result.secret}</p>
+                    <div class="form-group" style="margin-top:12px;">
+                        <label>Código de verificación</label>
+                        <input type="text" id="2fa-confirm-code" placeholder="123456" maxlength="6">
+                    </div>
+                    <button class="btn btn-primary" onclick="App.confirm2FA()">Confirmar</button>
+                </div>`;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async confirm2FA() {
+        const code = document.getElementById('2fa-confirm-code').value;
+        if (!code) return this.toast('Introduce el código', 'error');
+        try {
+            await API.confirm2FA(code);
+            this.toast('2FA activado correctamente');
+            this.load2FAStatus();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async disable2FA() {
+        const password = document.getElementById('2fa-disable-pass').value;
+        if (!password) return this.toast('Introduce tu contraseña', 'error');
+        try {
+            await API.disable2FA(password);
+            this.toast('2FA desactivado');
+            this.load2FAStatus();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- ADMIN ---
+    async loadAdmin() {
+        const role = API.user?.role;
+        if (role !== 'Admin' && role !== 'Superuser' && role !== 'SuperUserMaster') {
+            document.getElementById('admin-content').innerHTML = '<div class="empty-state"><p>No tienes permisos</p></div>';
+            return;
+        }
+        try {
+            const users = await API.listarUsuarios();
+            const isSUM = role === 'SuperUserMaster';
+            let html = '<div class="admin-list">';
+            for (const u of users) {
+                const roleBadge = this.getRoleBadge(u.role);
+                const statusBadge = u.isActive
+                    ? '<span class="badge badge-success">Activo</span>'
+                    : '<span class="badge badge-danger">Inactivo</span>';
+                html += `
+                    <div class="card" style="margin:8px 16px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <strong>${u.username}</strong>
+                                <div style="font-size:12px;color:var(--text-secondary);">${u.email || 'Sin email'}</div>
+                                <div style="margin-top:4px;">${roleBadge} ${statusBadge}</div>
+                            </div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                                ${isSUM ? `
+                                    <button class="btn btn-sm btn-outline" onclick="App.editarUsuario(${u.id},'${u.email||''}','${u.role}',${u.isActive})">Editar</button>
+                                    <button class="btn btn-sm btn-accent" onclick="App.impersonarUsuario(${u.id})">Impersonar</button>
+                                    ${u.id !== API.user.id ? `<button class="btn btn-sm btn-danger" onclick="App.eliminarUsuario(${u.id},'${u.username}')">X</button>` : ''}
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>`;
+            }
+            html += '</div>';
+
+            // Stats summary
+            const totalUsers = users.length;
+            const activeUsers = users.filter(u => u.isActive).length;
+            const statsHtml = `
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value">${totalUsers}</div><div class="stat-label">Total usuarios</div></div>
+                    <div class="stat-card"><div class="stat-value">${activeUsers}</div><div class="stat-label">Activos</div></div>
+                </div>`;
+
+            document.getElementById('admin-content').innerHTML = statsHtml + html;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    getRoleBadge(role) {
+        const colors = { Standard: '#9E9E9E', Admin: '#2196F3', Superuser: '#FF9800', SuperUserMaster: '#f44336' };
+        return `<span class="badge" style="background:${colors[role] || '#9E9E9E'};color:white;">${role}</span>`;
+    },
+
+    editarUsuario(id, email, role, isActive) {
+        document.getElementById('edit-user-id').value = id;
+        document.getElementById('edit-user-email').value = email;
+        document.getElementById('edit-user-role').value = role;
+        document.getElementById('edit-user-active').value = String(isActive);
+        document.getElementById('edit-user-newpass').value = '';
+        this.openModal('modal-editar-usuario');
+    },
+
+    async guardarUsuario() {
+        const id = document.getElementById('edit-user-id').value;
+        const email = document.getElementById('edit-user-email').value;
+        const role = document.getElementById('edit-user-role').value;
+        const isActive = document.getElementById('edit-user-active').value === 'true';
+        try {
+            await API.actualizarUsuario(id, { email, role, isActive });
+            this.toast('Usuario actualizado');
+            this.closeModal('modal-editar-usuario');
+            this.loadAdmin();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async resetPasswordUsuario() {
+        const id = document.getElementById('edit-user-id').value;
+        const newPassword = document.getElementById('edit-user-newpass').value;
+        if (!newPassword) return this.toast('Introduce la nueva contraseña', 'error');
+        try {
+            await API.resetPassword(id, newPassword);
+            this.toast('Contraseña reseteada');
+            document.getElementById('edit-user-newpass').value = '';
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async crearUsuario() {
+        const username = document.getElementById('new-user-username').value;
+        const email = document.getElementById('new-user-email').value;
+        const password = document.getElementById('new-user-password').value;
+        const role = document.getElementById('new-user-role').value;
+        if (!username || !email || !password) return this.toast('Completa todos los campos', 'error');
+        try {
+            await API.crearUsuario({ username, email, password, role, isActive: true });
+            this.toast('Usuario creado');
+            this.closeModal('modal-crear-usuario');
+            this.loadAdmin();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async eliminarUsuario(id, username) {
+        if (!confirm(`¿Eliminar al usuario ${username}?`)) return;
+        try {
+            await API.eliminarUsuario(id);
+            this.toast('Usuario eliminado');
+            this.loadAdmin();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async impersonarUsuario(id) {
+        if (!confirm('¿Impersonar este usuario?')) return;
+        try {
+            const res = await API.impersonar(id);
+            API.setAuth(res.accessToken, res.refreshToken, res.user);
+            this.updateAdminNav();
+            this.showPage('dashboard');
+            this.loadDashboard();
+            this.toast('Impersonando a ' + res.user.username);
         } catch (e) { this.toast(e.message, 'error'); }
     },
 

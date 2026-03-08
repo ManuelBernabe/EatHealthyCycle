@@ -210,9 +210,11 @@ body {
     font-size: 14px;
     color: white;
 }
+.meal-predesayuno { background: #FF7043; }
 .meal-desayuno { background: #FF9800; }
 .meal-mediamanana { background: #FFC107; color: var(--text) !important; }
 .meal-almuerzo { background: var(--primary); }
+.meal-comida { background: #009688; }
 .meal-merienda { background: #2196F3; }
 .meal-cena { background: #9C27B0; }
 .meal-body { padding: 12px 16px; }
@@ -402,3 +404,17 @@ body {
     font-weight: 700;
     margin: 0 auto;
 }
+
+/* --- Badges --- */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+.badge-success { background: var(--primary-light); color: var(--primary-dark); }
+.badge-danger { background: #FFCDD2; color: var(--danger); }
+
+/* --- Admin --- */
+.admin-list { padding-bottom: 16px; }

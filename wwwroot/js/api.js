@@ -102,5 +102,21 @@ const API = {
     // Lista compra
     generarListaCompra: (planId) => API.request('POST', `/api/planes/${planId}/lista-compra`),
     obtenerListaCompra: (planId) => API.request('GET', `/api/planes/${planId}/lista-compra`),
-    toggleComprado: (itemId) => API.request('PUT', `/api/lista-compra/${itemId}`)
+    toggleComprado: (itemId) => API.request('PUT', `/api/lista-compra/${itemId}`),
+
+    // Admin - Users
+    listarUsuarios: () => API.request('GET', '/users'),
+    crearUsuario: (data) => API.request('POST', '/users', data),
+    actualizarUsuario: (id, data) => API.request('PUT', `/users/${id}`, data),
+    eliminarUsuario: (id) => API.request('DELETE', `/users/${id}`),
+    resetPassword: (id, newPassword) => API.request('PUT', `/users/${id}/password`, { newPassword }),
+    impersonar: (id) => API.request('POST', `/auth/impersonate/${id}`),
+
+    // Profile
+    actualizarPerfil: (data) => API.request('PUT', '/me/profile', data),
+    cambiarPassword: (data) => API.request('PUT', '/me/password', data),
+    get2FAStatus: () => API.request('GET', '/me/2fa/status'),
+    setup2FA: () => API.request('POST', '/me/2fa/setup'),
+    confirm2FA: (code) => API.request('POST', '/me/2fa/confirm', { code }),
+    disable2FA: (password) => API.request('POST', '/me/2fa/disable', { password })
 };
