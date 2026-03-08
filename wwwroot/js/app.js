@@ -1,0 +1,429 @@
+const App = {
+    currentPage: null,
+    currentPlan: null,
+    currentDayIndex: 0,
+
+    init() {
+        API.init();
+        if (API.isLoggedIn()) {
+            this.showPage('dashboard');
+            this.loadDashboard();
+        } else {
+            this.showPage('login');
+        }
+        this.bindNav();
+    },
+
+    showPage(name) {
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        const page = document.getElementById(`page-${name}`);
+        if (page) page.classList.add('active');
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        const nav = document.querySelector(`[data-page="${name}"]`);
+        if (nav) nav.classList.add('active');
+        const bottomNav = document.getElementById('bottom-nav');
+        if (bottomNav) bottomNav.style.display = name === 'login' || name === 'register' ? 'none' : 'flex';
+        this.currentPage = name;
+    },
+
+    bindNav() {
+        document.querySelectorAll('.nav-item').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const page = btn.dataset.page;
+                this.showPage(page);
+                if (page === 'dashboard') this.loadDashboard();
+                if (page === 'plan') this.loadPlan();
+                if (page === 'peso') this.loadPeso();
+                if (page === 'compra') this.loadCompra();
+            });
+        });
+    },
+
+    toast(msg, type = 'success') {
+        const el = document.getElementById('toast');
+        el.textContent = msg;
+        el.className = `toast ${type} show`;
+        setTimeout(() => el.classList.remove('show'), 3000);
+    },
+
+    // --- AUTH ---
+    async login() {
+        const username = document.getElementById('login-username').value;
+        const password = document.getElementById('login-password').value;
+        if (!username || !password) return this.toast('Completa todos los campos', 'error');
+        try {
+            const btn = document.getElementById('btn-login');
+            btn.disabled = true;
+            btn.textContent = 'Entrando...';
+            const res = await API.login(username, password);
+            if (res.requires2FA) {
+                this.toast('2FA requerido (no implementado en frontend aún)', 'error');
+                return;
+            }
+            API.setAuth(res.accessToken, res.refreshToken, res.user);
+            this.showPage('dashboard');
+            this.loadDashboard();
+            this.toast('Bienvenido ' + res.user.username);
+        } catch (e) {
+            this.toast(e.message, 'error');
+        } finally {
+            const btn = document.getElementById('btn-login');
+            btn.disabled = false;
+            btn.textContent = 'Entrar';
+        }
+    },
+
+    async register() {
+        const username = document.getElementById('reg-username').value;
+        const email = document.getElementById('reg-email').value;
+        const password = document.getElementById('reg-password').value;
+        if (!username || !email || !password) return this.toast('Completa todos los campos', 'error');
+        try {
+            await API.register(username, email, password);
+            this.toast('Registro exitoso. Revisa tu email para activar la cuenta.');
+            this.showLoginForm();
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
+    },
+
+    showRegisterForm() {
+        document.getElementById('login-form').style.display = 'none';
+        document.getElementById('register-form').style.display = 'block';
+    },
+
+    showLoginForm() {
+        document.getElementById('login-form').style.display = 'block';
+        document.getElementById('register-form').style.display = 'none';
+    },
+
+    logout() {
+        API.logout();
+        this.showPage('login');
+    },
+
+    // --- DASHBOARD ---
+    async loadDashboard() {
+        const uid = API.user?.id;
+        if (!uid) return;
+        try {
+            const [dietas, planes, pesos] = await Promise.all([
+                API.listarDietas(uid),
+                API.listarPlanes(uid),
+                API.listarPeso(uid)
+            ]);
+
+            document.getElementById('stat-dietas').textContent = dietas.length;
+            document.getElementById('stat-planes').textContent = planes.length;
+            document.getElementById('stat-registros').textContent = pesos.length;
+
+            const lastPeso = pesos.length > 0 ? pesos[pesos.length - 1].peso + ' kg' : '--';
+            document.getElementById('stat-peso').textContent = lastPeso;
+
+            document.getElementById('dashboard-user').textContent = API.user.username;
+
+            // Load compliance if there's an active plan
+            if (planes.length > 0) {
+                const lastPlan = planes[0];
+                try {
+                    const c = await API.cumplimiento(lastPlan.id);
+                    document.getElementById('stat-cumplimiento').textContent = c.porcentajeCumplimiento + '%';
+                    document.getElementById('progress-fill').style.width = c.porcentajeCumplimiento + '%';
+                } catch { }
+                this.currentPlan = lastPlan;
+            }
+
+            this.renderDietasList(dietas);
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
+    },
+
+    renderDietasList(dietas) {
+        const container = document.getElementById('dietas-list');
+        if (dietas.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-secondary);text-align:center;padding:16px;">No hay dietas importadas</p>';
+            return;
+        }
+        container.innerHTML = dietas.map(d => `
+            <div class="card" style="margin:8px 0;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <strong>${d.nombre}</strong>
+                        <div style="font-size:12px;color:var(--text-secondary);">${new Date(d.fechaImportacion).toLocaleDateString('es')}</div>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Crear Plan</button>
+                        <button class="btn btn-danger btn-sm" onclick="App.borrarDieta(${d.id})">X</button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    // --- IMPORT DIET ---
+    async importarDieta() {
+        const file = document.getElementById('diet-file').files[0];
+        const nombre = document.getElementById('diet-name').value;
+        if (!file || !nombre) return this.toast('Selecciona un PDF y un nombre', 'error');
+
+        const formData = new FormData();
+        formData.append('archivo', file);
+        formData.append('nombre', nombre);
+
+        try {
+            await API.importarDieta(API.user.id, formData);
+            this.toast('Dieta importada correctamente');
+            this.closeModal('modal-import');
+            this.loadDashboard();
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
+    },
+
+    async borrarDieta(id) {
+        if (!confirm('¿Eliminar esta dieta?')) return;
+        try {
+            await API.eliminarDieta(id);
+            this.toast('Dieta eliminada');
+            this.loadDashboard();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async crearPlanDesdeDieta(dietaId) {
+        const lunes = getNextMonday();
+        try {
+            await API.crearPlan(API.user.id, dietaId, lunes);
+            this.toast('Plan semanal creado');
+            this.loadDashboard();
+            this.showPage('plan');
+            this.loadPlan();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- PLAN SEMANAL ---
+    async loadPlan() {
+        const uid = API.user?.id;
+        if (!uid) return;
+        try {
+            const planes = await API.listarPlanes(uid);
+            if (planes.length === 0) {
+                document.getElementById('plan-content').innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                        <p>No hay planes semanales</p>
+                        <p style="font-size:13px;">Importa una dieta y crea tu primer plan</p>
+                    </div>`;
+                return;
+            }
+
+            const plan = await API.obtenerPlan(planes[0].id);
+            this.currentPlan = plan;
+            this.renderPlan(plan);
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    renderPlan(plan) {
+        const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+        const mealTypes = {
+            'Desayuno': 'desayuno',
+            'MediaManana': 'mediamanana',
+            'Almuerzo': 'almuerzo',
+            'Merienda': 'merienda',
+            'Cena': 'cena'
+        };
+        const mealNames = {
+            'Desayuno': 'Desayuno',
+            'MediaManana': 'Media Mañana',
+            'Almuerzo': 'Almuerzo',
+            'Merienda': 'Merienda',
+            'Cena': 'Cena'
+        };
+
+        // Day tabs
+        const tabsHtml = plan.dias.map((d, i) => {
+            const date = new Date(d.fecha);
+            return `<button class="day-tab ${i === this.currentDayIndex ? 'active' : ''}" onclick="App.selectDay(${i})">${days[date.getDay()]} ${date.getDate()}</button>`;
+        }).join('');
+
+        const dia = plan.dias[this.currentDayIndex];
+        const mealsHtml = Object.keys(mealTypes).map(tipo => {
+            const comidas = dia.comidas.filter(c => c.tipo === tipo);
+            if (comidas.length === 0) return '';
+            return `
+                <div class="meal-card">
+                    <div class="meal-header meal-${mealTypes[tipo]}">${mealNames[tipo]}</div>
+                    <div class="meal-body">
+                        ${comidas.map(c => `
+                            <div class="meal-item">
+                                <div class="meal-check ${c.completada ? 'checked' : ''}" onclick="App.toggleMeal(${c.id}, this)">
+                                    ${c.completada ? '✓' : ''}
+                                </div>
+                                <span class="meal-text ${c.completada ? 'completed' : ''}">${c.descripcion}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('plan-content').innerHTML = `
+            <div class="day-tabs">${tabsHtml}</div>
+            ${mealsHtml}
+            <div style="padding:16px;">
+                <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
+            </div>
+        `;
+    },
+
+    selectDay(index) {
+        this.currentDayIndex = index;
+        if (this.currentPlan) this.renderPlan(this.currentPlan);
+    },
+
+    async toggleMeal(id, el) {
+        try {
+            const res = await API.toggleComida(id);
+            el.classList.toggle('checked');
+            el.innerHTML = res.completada ? '✓' : '';
+            el.nextElementSibling.classList.toggle('completed');
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- PESO ---
+    async loadPeso() {
+        const uid = API.user?.id;
+        if (!uid) return;
+        try {
+            const pesos = await API.listarPeso(uid);
+            const container = document.getElementById('peso-content');
+
+            if (pesos.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+                        <p>Sin registros de peso</p>
+                    </div>`;
+                return;
+            }
+
+            let html = '<div class="weight-list">';
+            for (let i = pesos.length - 1; i >= 0; i--) {
+                const p = pesos[i];
+                let diffHtml = '';
+                if (i > 0) {
+                    const diff = (p.peso - pesos[i - 1].peso).toFixed(1);
+                    const cls = diff < 0 ? 'down' : diff > 0 ? 'up' : '';
+                    diffHtml = `<span class="weight-diff ${cls}">${diff > 0 ? '+' : ''}${diff} kg</span>`;
+                }
+                html += `
+                    <div class="weight-entry">
+                        <div>
+                            <div class="weight-value">${p.peso} kg</div>
+                            <div class="weight-date">${new Date(p.fecha).toLocaleDateString('es')}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            ${diffHtml}
+                            <button class="btn btn-danger btn-sm" style="margin-top:4px;" onclick="App.borrarPeso(${p.id})">X</button>
+                        </div>
+                    </div>`;
+            }
+            html += '</div>';
+            container.innerHTML = html;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async registrarPeso() {
+        const peso = parseFloat(document.getElementById('new-peso').value);
+        const nota = document.getElementById('new-peso-nota').value;
+        if (!peso) return this.toast('Introduce un peso válido', 'error');
+
+        try {
+            await API.registrarPeso(API.user.id, new Date().toISOString(), peso, nota || null);
+            this.toast('Peso registrado');
+            this.closeModal('modal-peso');
+            this.loadPeso();
+            this.loadDashboard();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async borrarPeso(id) {
+        if (!confirm('¿Eliminar este registro?')) return;
+        try {
+            await API.eliminarPeso(id);
+            this.toast('Registro eliminado');
+            this.loadPeso();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- LISTA COMPRA ---
+    async loadCompra() {
+        const uid = API.user?.id;
+        if (!uid) return;
+        try {
+            const planes = await API.listarPlanes(uid);
+            const container = document.getElementById('compra-content');
+
+            if (planes.length === 0) {
+                container.innerHTML = '<div class="empty-state"><p>Crea un plan semanal primero</p></div>';
+                return;
+            }
+
+            const planId = planes[0].id;
+            let items = await API.obtenerListaCompra(planId);
+
+            if (items.length === 0) {
+                // Generate it
+                items = await API.generarListaCompra(planId);
+            }
+
+            if (items.length === 0) {
+                container.innerHTML = '<div class="empty-state"><p>No hay items en la lista</p></div>';
+                return;
+            }
+
+            let html = '';
+            let currentCat = '';
+            for (const item of items) {
+                if (item.categoria && item.categoria !== currentCat) {
+                    currentCat = item.categoria;
+                    html += `<div class="shop-category">${currentCat}</div>`;
+                }
+                html += `
+                    <div class="shop-item ${item.comprado ? 'bought' : ''}" onclick="App.toggleComprado(${item.id}, this)">
+                        <div class="meal-check ${item.comprado ? 'checked' : ''}">${item.comprado ? '✓' : ''}</div>
+                        <span class="name">${item.nombre}</span>
+                        <span class="qty">${item.cantidad || ''}</span>
+                    </div>`;
+            }
+            container.innerHTML = html;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async toggleComprado(id, el) {
+        try {
+            const res = await API.toggleComprado(id);
+            el.classList.toggle('bought');
+            el.querySelector('.meal-check').classList.toggle('checked');
+            el.querySelector('.meal-check').innerHTML = res.comprado ? '✓' : '';
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- MODALS ---
+    openModal(id) {
+        document.getElementById(id).classList.add('active');
+    },
+    closeModal(id) {
+        document.getElementById(id).classList.remove('active');
+    }
+};
+
+function getNextMonday() {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().split('T')[0];
+}
+
+document.addEventListener('DOMContentLoaded', () => App.init());

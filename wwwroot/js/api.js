@@ -1,0 +1,106 @@
+const API = {
+    baseUrl: '',
+    token: null,
+    user: null,
+
+    init() {
+        this.token = localStorage.getItem('token');
+        this.user = JSON.parse(localStorage.getItem('user') || 'null');
+    },
+
+    setAuth(accessToken, refreshToken, user) {
+        this.token = accessToken;
+        this.user = user;
+        localStorage.setItem('token', accessToken);
+        localStorage.setItem('refreshToken', refreshToken);
+        localStorage.setItem('user', JSON.stringify(user));
+    },
+
+    logout() {
+        this.token = null;
+        this.user = null;
+        localStorage.clear();
+    },
+
+    isLoggedIn() {
+        return !!this.token;
+    },
+
+    async request(method, path, body, isFormData) {
+        const headers = {};
+        if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+        if (!isFormData) headers['Content-Type'] = 'application/json';
+
+        const opts = { method, headers };
+        if (body) opts.body = isFormData ? body : JSON.stringify(body);
+
+        let res = await fetch(this.baseUrl + path, opts);
+
+        // Token expired - try refresh
+        if (res.status === 401 && this.token) {
+            const refreshed = await this.tryRefresh();
+            if (refreshed) {
+                headers['Authorization'] = `Bearer ${this.token}`;
+                opts.headers = headers;
+                res = await fetch(this.baseUrl + path, opts);
+            } else {
+                this.logout();
+                App.showPage('login');
+                throw new Error('Sesión expirada');
+            }
+        }
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            throw new Error(err.error || err.title || 'Error');
+        }
+
+        const text = await res.text();
+        return text ? JSON.parse(text) : null;
+    },
+
+    async tryRefresh() {
+        const refreshToken = localStorage.getItem('refreshToken');
+        if (!refreshToken) return false;
+        try {
+            const res = await fetch(this.baseUrl + '/auth/refresh', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refreshToken })
+            });
+            if (!res.ok) return false;
+            const data = await res.json();
+            this.setAuth(data.accessToken, data.refreshToken, data.user);
+            return true;
+        } catch { return false; }
+    },
+
+    // Auth
+    login: (username, password) => API.request('POST', '/auth/login', { username, password }),
+    register: (username, email, password) => API.request('POST', '/auth/register', { username, email, password }),
+    me: () => API.request('GET', '/auth/me'),
+
+    // Dietas
+    importarDieta: (usuarioId, formData) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/importar`, formData, true),
+    listarDietas: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/dietas`),
+    obtenerDieta: (id) => API.request('GET', `/api/dietas/${id}`),
+    eliminarDieta: (id) => API.request('DELETE', `/api/dietas/${id}`),
+
+    // Planes
+    crearPlan: (usuarioId, dietaId, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes`, { dietaId, fechaInicio }),
+    listarPlanes: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/planes`),
+    obtenerPlan: (id) => API.request('GET', `/api/planes/${id}`),
+    eliminarPlan: (id) => API.request('DELETE', `/api/planes/${id}`),
+    toggleComida: (id) => API.request('PUT', `/api/plancomidas/${id}/completar`),
+    cumplimiento: (planId) => API.request('GET', `/api/planes/${planId}/cumplimiento`),
+
+    // Peso
+    registrarPeso: (usuarioId, fecha, peso, nota) => API.request('POST', `/api/usuarios/${usuarioId}/peso`, { fecha, peso, nota }),
+    listarPeso: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/peso`),
+    eliminarPeso: (id) => API.request('DELETE', `/api/peso/${id}`),
+
+    // Lista compra
+    generarListaCompra: (planId) => API.request('POST', `/api/planes/${planId}/lista-compra`),
+    obtenerListaCompra: (planId) => API.request('GET', `/api/planes/${planId}/lista-compra`),
+    toggleComprado: (itemId) => API.request('PUT', `/api/lista-compra/${itemId}`)
+};
