@@ -80,24 +80,48 @@ public class ImageImportService : IImageImportService
 
     private async Task<List<OcrWord>> RunTesseractAsync(string imagePath)
     {
+        _logger.LogInformation("Running Tesseract on image: {Path} (size: {Size} bytes)",
+            imagePath, new FileInfo(imagePath).Length);
+
+        // Try multiple PSM modes and languages until we get words
+        var attempts = new[]
+        {
+            ("spa", "6"),   // PSM 6: assume single uniform block of text
+            ("spa", "3"),   // PSM 3: fully automatic page segmentation
+            ("spa", "4"),   // PSM 4: assume single column of variable-size text
+            ("eng", "6"),   // Fallback to English
+        };
+
+        foreach (var (lang, psm) in attempts)
+        {
+            var words = await TryTesseractAsync(imagePath, lang, psm);
+            if (words.Count > 0)
+            {
+                _logger.LogInformation("Success with lang={Lang} psm={Psm}: {Count} words", lang, psm, words.Count);
+                return words;
+            }
+            _logger.LogInformation("No words with lang={Lang} psm={Psm}, trying next...", lang, psm);
+        }
+
+        return new List<OcrWord>();
+    }
+
+    private async Task<List<OcrWord>> TryTesseractAsync(string imagePath, string lang, string psm)
+    {
         var tsvOutput = Path.Combine(Path.GetDirectoryName(imagePath)!, $"{Guid.NewGuid()}");
 
         try
         {
-            // Try with Spanish first, fallback to default if spa not available
-            var lang = "spa";
+            // Force DPI to 300 for better recognition
             var psi = new ProcessStartInfo
             {
                 FileName = "tesseract",
-                Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l {lang} --psm 3 tsv",
+                Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l {lang} --psm {psm} --dpi 300 tsv",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-
-            _logger.LogInformation("Running Tesseract on image: {Path} (size: {Size} bytes)",
-                imagePath, new FileInfo(imagePath).Length);
 
             Process? startedProcess = null;
             try
@@ -118,94 +142,105 @@ public class ImageImportService : IImageImportService
             var stderr = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            _logger.LogInformation("Tesseract exit code: {Code}, stderr: {Err}",
-                process.ExitCode, stderr.Length > 500 ? stderr[..500] : stderr);
+            _logger.LogInformation("Tesseract [lang={Lang} psm={Psm}] exit={Code}, stderr: {Err}",
+                lang, psm, process.ExitCode, stderr.Length > 300 ? stderr[..300] : stderr);
 
             if (process.ExitCode != 0)
-            {
-                _logger.LogWarning("Tesseract with spa failed (exit {Code}): {Error}, retrying with eng",
-                    process.ExitCode, stderr);
-                // Retry with English
-                psi.Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l eng --psm 3 tsv";
-                using var process2 = Process.Start(psi)!;
-                var stderr2 = await process2.StandardError.ReadToEndAsync();
-                await process2.WaitForExitAsync();
-
-                _logger.LogInformation("Tesseract eng exit code: {Code}, stderr: {Err}",
-                    process2.ExitCode, stderr2.Length > 500 ? stderr2[..500] : stderr2);
-
-                if (process2.ExitCode != 0)
-                {
-                    _logger.LogError("Tesseract error: {Error}", stderr2);
-                    throw new InvalidOperationException($"Tesseract OCR falló: {stderr2}");
-                }
-            }
+                return new List<OcrWord>();
 
             var tsvFile = tsvOutput + ".tsv";
             if (!File.Exists(tsvFile))
-            {
-                _logger.LogError("TSV file not found at {Path}", tsvFile);
-                throw new InvalidOperationException("Tesseract no generó archivo de salida");
-            }
+                return new List<OcrWord>();
 
             var lines = await File.ReadAllLinesAsync(tsvFile);
-            _logger.LogInformation("TSV file has {Lines} lines (including header)", lines.Length);
+            _logger.LogInformation("TSV has {Lines} lines", lines.Length);
 
-            var words = new List<OcrWord>();
-            var skippedLowConf = 0;
-            var skippedParse = 0;
-
-            // TSV: level page_num block_num par_num line_num word_num left top width height conf text
-            foreach (var line in lines.Skip(1))
+            // Log first 10 raw lines for debugging
+            for (int i = 0; i < Math.Min(10, lines.Length); i++)
             {
-                var parts = line.Split('\t');
-                if (parts.Length < 12) { skippedParse++; continue; }
-
-                var text = parts[11].Trim();
-                if (string.IsNullOrWhiteSpace(text)) continue;
-
-                if (!int.TryParse(parts[6], out var left)) { skippedParse++; continue; }
-                if (!int.TryParse(parts[7], out var top)) { skippedParse++; continue; }
-                if (!int.TryParse(parts[8], out var width)) { skippedParse++; continue; }
-                if (!int.TryParse(parts[9], out var height)) { skippedParse++; continue; }
-                if (!int.TryParse(parts[10], out var conf)) { skippedParse++; continue; }
-
-                if (conf >= 0 && conf < 10) { skippedLowConf++; continue; } // skip very low confidence
-
-                words.Add(new OcrWord
-                {
-                    Text = text,
-                    Left = left,
-                    Top = top,
-                    Width = width,
-                    Height = height,
-                    Right = left + width,
-                    Bottom = top + height,
-                    CenterX = left + width / 2.0,
-                    CenterY = top + height / 2.0,
-                    Confidence = conf,
-                    BlockNum = int.TryParse(parts[2], out var b) ? b : 0,
-                    LineNum = int.TryParse(parts[4], out var l) ? l : 0,
-                    ParNum = int.TryParse(parts[3], out var p) ? p : 0
-                });
+                _logger.LogInformation("TSV[{I}]: {Line}", i, lines[i].Length > 200 ? lines[i][..200] : lines[i]);
             }
 
-            _logger.LogInformation("OCR results: {Words} words extracted, {SkippedConf} low-confidence, {SkippedParse} parse errors",
-                words.Count, skippedLowConf, skippedParse);
+            // Also log some lines that have text (search for non-empty last column)
+            var sampleWithText = lines.Skip(1)
+                .Where(l => { var p = l.Split('\t'); return p.Length >= 12 && !string.IsNullOrWhiteSpace(p[11]); })
+                .Take(5);
+            foreach (var s in sampleWithText)
+                _logger.LogInformation("TSV word sample: {Line}", s);
 
-            if (words.Count > 0)
-            {
-                var sampleWords = words.Take(30).Select(w => $"'{w.Text}'({w.Confidence})");
-                _logger.LogInformation("Sample words: {Sample}", string.Join(", ", sampleWords));
-            }
-
-            return words;
+            return ParseTsvLines(lines);
         }
         finally
         {
             var tsvFile = tsvOutput + ".tsv";
             if (File.Exists(tsvFile)) File.Delete(tsvFile);
         }
+    }
+
+    internal List<OcrWord> ParseTsvLines(string[] lines)
+    {
+        var words = new List<OcrWord>();
+        var skippedLowConf = 0;
+        var skippedEmpty = 0;
+        var skippedLevel = 0;
+
+        // TSV header: level page_num block_num par_num line_num word_num left top width height conf text
+        foreach (var line in lines.Skip(1))
+        {
+            var parts = line.Split('\t');
+
+            // Need at least 11 columns (level through conf); text might be missing on structural lines
+            if (parts.Length < 11) continue;
+
+            // Only process word-level entries (level 5)
+            if (!int.TryParse(parts[0], out var level)) continue;
+            if (level != 5) { skippedLevel++; continue; }
+
+            // Text is column 11 (index 11) - might be missing if line has exactly 11 columns
+            var text = parts.Length > 11 ? parts[11].Trim() : "";
+            // If text column missing, try joining remaining columns (text might contain tabs)
+            if (string.IsNullOrWhiteSpace(text) && parts.Length > 12)
+            {
+                text = string.Join(" ", parts.Skip(11)).Trim();
+            }
+            if (string.IsNullOrWhiteSpace(text)) { skippedEmpty++; continue; }
+
+            if (!int.TryParse(parts[6], out var left)) continue;
+            if (!int.TryParse(parts[7], out var top)) continue;
+            if (!int.TryParse(parts[8], out var width)) continue;
+            if (!int.TryParse(parts[9], out var height)) continue;
+            if (!int.TryParse(parts[10], out var conf)) continue;
+
+            if (conf >= 0 && conf < 5) { skippedLowConf++; continue; }
+
+            words.Add(new OcrWord
+            {
+                Text = text,
+                Left = left,
+                Top = top,
+                Width = width,
+                Height = height,
+                Right = left + width,
+                Bottom = top + height,
+                CenterX = left + width / 2.0,
+                CenterY = top + height / 2.0,
+                Confidence = conf,
+                BlockNum = int.TryParse(parts[2], out var b) ? b : 0,
+                LineNum = int.TryParse(parts[4], out var l) ? l : 0,
+                ParNum = int.TryParse(parts[3], out var p) ? p : 0
+            });
+        }
+
+        _logger.LogInformation("Parse results: {Words} words, {SkippedLevel} non-word lines, {SkippedEmpty} empty, {SkippedConf} low-conf",
+            words.Count, skippedLevel, skippedEmpty, skippedLowConf);
+
+        if (words.Count > 0)
+        {
+            var sampleWords = words.Take(30).Select(w => $"'{w.Text}'({w.Confidence})");
+            _logger.LogInformation("Words sample: {Sample}", string.Join(", ", sampleWords));
+        }
+
+        return words;
     }
 
     private Dieta ParseTableFromWords(List<OcrWord> words, int usuarioId, string nombreDieta, string nombreArchivo)
@@ -709,7 +744,7 @@ public class ImageImportService : IImageImportService
         };
     }
 
-    private class OcrWord
+    internal class OcrWord
     {
         public string Text { get; set; } = "";
         public int Left { get; set; }
