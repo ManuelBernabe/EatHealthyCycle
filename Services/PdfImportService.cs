@@ -519,7 +519,7 @@ public class PdfImportService : IPdfImportService
                 {
                     var itemText = string.Join(" ", currentItemParts);
                     if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
-                        foodItems.Add(itemText);
+                        foodItems.Add(StripMealTypeFromFood(itemText));
                     currentItemParts.Clear();
                 }
                 currentItemParts.Add(lineText);
@@ -528,7 +528,7 @@ public class PdfImportService : IPdfImportService
             {
                 var itemText = string.Join(" ", currentItemParts);
                 if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
-                    foodItems.Add(itemText);
+                    foodItems.Add(StripMealTypeFromFood(itemText));
             }
         }
         else
@@ -536,16 +536,19 @@ public class PdfImportService : IPdfImportService
             // No bullets detected: use quantity-boundary heuristic.
             // A new food item starts when a line begins with a WORD (not a quantity continuation).
             // Lines that are just quantities or adjectives append to previous item.
+            // CRITICAL: If the previous accumulated text ends with a preposition (DE, DEL, CON, etc.),
+            // the next line is ALWAYS a continuation, even if it looks like a new food item.
             var currentItemParts = new List<string>();
             foreach (var (lineText, _) in cleanLines)
             {
-                // If we have accumulated text and current line looks like a new food
-                // (starts with letter, not a quantity, not an adjective)
-                if (currentItemParts.Count > 0 && LooksLikeNewFoodItem(lineText))
+                bool prevEndsWithPreposition = currentItemParts.Count > 0 &&
+                    EndsWithPreposition(currentItemParts[^1]);
+
+                if (currentItemParts.Count > 0 && !prevEndsWithPreposition && LooksLikeNewFoodItem(lineText))
                 {
                     var itemText = string.Join(" ", currentItemParts);
                     if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
-                        foodItems.Add(itemText);
+                        foodItems.Add(StripMealTypeFromFood(itemText));
                     currentItemParts.Clear();
                 }
                 currentItemParts.Add(lineText);
@@ -554,7 +557,7 @@ public class PdfImportService : IPdfImportService
             {
                 var itemText = string.Join(" ", currentItemParts);
                 if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
-                    foodItems.Add(itemText);
+                    foodItems.Add(StripMealTypeFromFood(itemText));
             }
         }
 
@@ -869,6 +872,40 @@ public class PdfImportService : IPdfImportService
         return true;
     }
 
+    // ==================== HELPERS ====================
+
+    private static readonly HashSet<string> Prepositions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DE", "DEL", "CON", "AL", "EN", "A", "LA", "LAS", "LOS"
+    };
+
+    /// <summary>
+    /// Check if a text ends with a preposition (DE, DEL, CON, etc.)
+    /// meaning the next line is a continuation, not a new food item.
+    /// </summary>
+    private static bool EndsWithPreposition(string text)
+    {
+        var words = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return false;
+        return Prepositions.Contains(words[^1]);
+    }
+
+    private static readonly HashSet<string> MealTypeWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA"
+    };
+
+    /// <summary>
+    /// Remove meal type words (COMIDA, CENA, etc.) that leaked into food names.
+    /// E.g., "SAL YODADA COMIDA" → "SAL YODADA"
+    /// </summary>
+    private static string StripMealTypeFromFood(string text)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var cleaned = words.Where(w => !MealTypeWords.Contains(w)).ToArray();
+        return string.Join(" ", cleaned);
+    }
+
     // ==================== NOISE FILTERS ====================
 
     private static bool IsNoiseLine(string linea)
@@ -890,10 +927,15 @@ public class PdfImportService : IPdfImportService
             return true;
         // Día off / supplement section text
         if (l.Contains("día off") || l.Contains("dia off") || l.Contains("no entreno") ||
-            l.Contains("igual a los") || l.Contains("actividad física") || l.Contains("actividad fisica") ||
+            l.Contains("igual a los") || l.Contains("actividad fís") || l.Contains("actividad fis") ||
+            l.Contains("actividada") || // typo variant in some PDFs
             l.Contains("suplementación") || l.Contains("suplementacion") ||
             l.Contains("de dormir"))
             return true;
+        // Pure quantity/dosage items with no food name: "(300mg)", "(1000mg)", "(1G)"
+        if (Regex.IsMatch(l, @"^\(?\d+\s*(mg|g|ml|l|mcg)\)?$")) return true;
+        // Standalone prepositions or articles that got orphaned
+        if (l.Length <= 3 && Prepositions.Contains(l.Trim())) return true;
         // Lines starting with "-" followed by meal names (Día off format: "-Desayuno ...", "-Comida ...")
         if (Regex.IsMatch(l, @"^-?\s*nac\b")) return true;
         if (Regex.IsMatch(l, @"^-\s*(desayuno|almuerzo|comida|merienda|cena)\b")) return true;
