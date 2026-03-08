@@ -9,6 +9,7 @@ const App = {
             this.showPage('dashboard');
             this.loadDashboard();
             this.updateAdminNav();
+            this.checkForUpdates();
         } else {
             this.showPage('login');
         }
@@ -683,6 +684,16 @@ const App = {
                     <div class="stat-card"><div class="stat-value">${activeUsers}</div><div class="stat-label">Activos</div></div>
                 </div>`;
 
+            // DB Admin section (SuperUserMaster only)
+            if (isSUM) {
+                html += `
+                    <div class="card" style="margin:16px;">
+                        <h3 style="margin-bottom:12px;">Base de Datos</h3>
+                        <button class="btn btn-primary btn-sm" onclick="App.loadDbAdmin()">Explorar tablas</button>
+                        <button class="btn btn-outline btn-sm" onclick="App.openSqlConsole()">Consola SQL</button>
+                    </div>`;
+            }
+
             document.getElementById('admin-content').innerHTML = statsHtml + html;
         } catch (e) { this.toast(e.message, 'error'); }
     },
@@ -758,6 +769,153 @@ const App = {
             this.loadDashboard();
             this.toast('Impersonando a ' + res.user.username);
         } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    // --- DB ADMIN ---
+    async loadDbAdmin() {
+        try {
+            const tables = await API.dbTables();
+            let html = `<div class="card" style="margin:16px;">
+                <h3 style="margin-bottom:12px;">Tablas de la base de datos</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;">`;
+            for (const t of tables) {
+                html += `<button class="btn btn-outline btn-sm" onclick="App.loadDbTable('${t}')">${t}</button>`;
+            }
+            html += `</div>
+                <div style="margin-top:12px;">
+                    <button class="btn btn-sm" style="background:#666;color:white;" onclick="App.openSqlConsole()">Consola SQL</button>
+                    <button class="btn btn-sm btn-outline" onclick="App.loadAdmin()">Volver</button>
+                </div>
+            </div>
+            <div id="db-table-content"></div>`;
+            document.getElementById('admin-content').innerHTML = html;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async loadDbTable(table, page = 1) {
+        try {
+            const data = await API.dbTableData(table, page);
+            const totalPages = Math.ceil(data.total / data.pageSize);
+            let html = `<div class="card" style="margin:16px;overflow-x:auto;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3>${table} <span style="font-weight:normal;font-size:13px;color:var(--text-secondary);">(${data.total} filas)</span></h3>
+                    <div style="display:flex;gap:6px;">
+                        ${page > 1 ? `<button class="btn btn-sm btn-outline" onclick="App.loadDbTable('${table}',${page - 1})">Anterior</button>` : ''}
+                        <span style="padding:6px;font-size:13px;">${page}/${totalPages}</span>
+                        ${page < totalPages ? `<button class="btn btn-sm btn-outline" onclick="App.loadDbTable('${table}',${page + 1})">Siguiente</button>` : ''}
+                    </div>
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead><tr>`;
+            for (const col of data.columns) {
+                html += `<th style="padding:6px 8px;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap;">${col.name}${col.pk ? ' (PK)' : ''}<br><span style="color:#999;font-weight:normal;">${col.type}</span></th>`;
+            }
+            html += `<th style="padding:6px;border-bottom:2px solid var(--border);"></th></tr></thead><tbody>`;
+            for (const row of data.rows) {
+                html += '<tr>';
+                let pkVal = null;
+                for (const col of data.columns) {
+                    const val = row[col.name];
+                    if (col.pk) pkVal = val;
+                    const display = val === null ? '<em style="color:#999;">NULL</em>' : String(val).length > 50 ? String(val).substring(0, 50) + '...' : String(val);
+                    html += `<td style="padding:4px 8px;border-bottom:1px solid var(--border);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${display}</td>`;
+                }
+                if (pkVal !== null) {
+                    html += `<td style="padding:4px;border-bottom:1px solid var(--border);"><button class="btn-delete-item" onclick="App.dbDeleteRow('${table}',${pkVal})">&times;</button></td>`;
+                }
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            document.getElementById('db-table-content').innerHTML = html;
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async dbDeleteRow(table, id) {
+        if (!confirm(`Eliminar fila ${id} de ${table}?`)) return;
+        try {
+            await API.dbDeleteRow(table, id);
+            this.toast('Fila eliminada');
+            this.loadDbTable(table);
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    openSqlConsole() {
+        let html = `<div class="card" style="margin:16px;">
+            <h3 style="margin-bottom:12px;">Consola SQL</h3>
+            <textarea id="sql-input" style="width:100%;height:120px;padding:10px;border:2px solid var(--border);border-radius:8px;font-family:monospace;font-size:13px;resize:vertical;" placeholder="SELECT * FROM Usuarios LIMIT 10;"></textarea>
+            <div style="margin-top:8px;display:flex;gap:8px;">
+                <button class="btn btn-primary btn-sm" onclick="App.executeSql()">Ejecutar</button>
+                <button class="btn btn-outline btn-sm" onclick="App.loadDbAdmin()">Volver a tablas</button>
+            </div>
+            <div id="sql-result" style="margin-top:12px;"></div>
+        </div>`;
+        const container = document.getElementById('db-table-content');
+        if (container) {
+            container.innerHTML = html;
+        } else {
+            document.getElementById('admin-content').innerHTML = html;
+        }
+    },
+
+    async executeSql() {
+        const sql = document.getElementById('sql-input').value.trim();
+        if (!sql) return this.toast('Escribe una consulta SQL', 'error');
+        try {
+            const result = await API.dbExecute(sql);
+            let html = '';
+            if (result.type === 'query') {
+                html = `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">${result.rowCount} resultados</div>`;
+                html += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
+                html += '<thead><tr>';
+                for (const col of result.columns) {
+                    html += `<th style="padding:6px 8px;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap;">${col}</th>`;
+                }
+                html += '</tr></thead><tbody>';
+                for (const row of result.rows) {
+                    html += '<tr>';
+                    for (const col of result.columns) {
+                        const val = row[col];
+                        const display = val === null ? '<em style="color:#999;">NULL</em>' : String(val).length > 80 ? String(val).substring(0, 80) + '...' : String(val);
+                        html += `<td style="padding:4px 8px;border-bottom:1px solid var(--border);">${display}</td>`;
+                    }
+                    html += '</tr>';
+                }
+                html += '</tbody></table></div>';
+            } else {
+                html = `<div style="padding:12px;background:#e8f5e9;border-radius:8px;color:#2e7d32;">${result.message}</div>`;
+            }
+            document.getElementById('sql-result').innerHTML = html;
+        } catch (e) {
+            document.getElementById('sql-result').innerHTML = `<div style="padding:12px;background:#ffebee;border-radius:8px;color:#c62828;">${e.message}</div>`;
+        }
+    },
+
+    // --- VERSION CHECK ---
+    async checkForUpdates() {
+        try {
+            const data = await API.getVersion();
+            const storedVersion = localStorage.getItem('appVersion');
+            if (storedVersion && storedVersion !== data.version) {
+                this.showUpdatePopup(data.version);
+            }
+            localStorage.setItem('appVersion', data.version);
+        } catch { /* ignore */ }
+    },
+
+    showUpdatePopup(version) {
+        const popup = document.createElement('div');
+        popup.id = 'update-popup';
+        popup.innerHTML = `
+            <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;">
+                <div style="background:white;border-radius:16px;padding:24px;max-width:340px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+                    <div style="font-size:40px;margin-bottom:12px;">&#x1F680;</div>
+                    <h3 style="margin-bottom:8px;">Nueva version disponible</h3>
+                    <p style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">Se ha actualizado EatHealthyCycle a la version ${version}. Recarga para obtener los ultimos cambios.</p>
+                    <button onclick="location.reload()" style="width:100%;padding:12px;background:var(--primary);color:white;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;">Actualizar ahora</button>
+                    <button onclick="document.getElementById('update-popup').remove()" style="width:100%;padding:10px;background:none;border:none;color:var(--text-secondary);font-size:13px;cursor:pointer;margin-top:8px;">Mas tarde</button>
+                </div>
+            </div>`;
+        document.body.appendChild(popup);
     },
 
     // --- MODALS ---

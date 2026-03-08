@@ -117,6 +117,15 @@ const API = {
     resetPassword: (id, newPassword) => API.request('PUT', `/users/${id}/password`, { newPassword }),
     impersonar: (id) => API.request('POST', `/auth/impersonate/${id}`),
 
+    // DB Admin
+    dbTables: () => API.request('GET', '/api/db/tables'),
+    dbTableData: (table, page = 1) => API.request('GET', `/api/db/tables/${table}?page=${page}`),
+    dbExecute: (sql) => API.request('POST', '/api/db/execute', { sql }),
+    dbDeleteRow: (table, id) => API.request('DELETE', `/api/db/tables/${table}/${id}`),
+
+    // Version
+    getVersion: () => fetch('/api/version').then(r => r.json()),
+
     // Profile
     actualizarPerfil: (data) => API.request('PUT', '/me/profile', data),
     cambiarPassword: (data) => API.request('PUT', '/me/password', data),
