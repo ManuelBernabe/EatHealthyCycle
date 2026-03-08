@@ -93,12 +93,11 @@ public class ImageImportService : IImageImportService
             imagePath, new FileInfo(imagePath).Length);
 
         List<OcrWord>? bestResult = null;
-        double bestScore = 0;
         string bestDesc = "";
 
-        // Try each strategy and pick the one with best quality score
-        // Score = wordCount * avgConfidence * wordSegmentationBonus
-        // This prefers results with many well-recognized, properly segmented words
+        // Try each strategy with PSM 6 (uniform block) first - best for table images.
+        // PSM 4 (single column) and PSM 11 (sparse) as fallbacks.
+        // Do NOT use PSM 3 (fully automatic) - it reorganizes table content.
         foreach (var strategy in PreprocessStrategies)
         {
             string inputPath;
@@ -113,30 +112,19 @@ public class ImageImportService : IImageImportService
 
             try
             {
-                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11"), ("spa", "3") })
+                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11") })
                 {
                     var words = await TryTesseractAsync(inputPath, lang, psm);
                     var desc = $"strategy='{strategy}' lang={lang} psm={psm}";
 
                     if (words.Count > 0)
                     {
-                        var avgConf = words.Average(w => (double)w.Confidence);
-                        var avgLen = words.Average(w => (double)w.Text.Length);
-                        // Penalize very long avg word length (merged words like "FILETEDETEMERA")
-                        // Ideal avg word length is 4-8 chars
-                        var segBonus = avgLen > 12 ? 0.5 : (avgLen > 8 ? 0.8 : 1.0);
-                        // Count distinct Tesseract lines as quality indicator
-                        var distinctLines = words.Select(w => (w.BlockNum, w.ParNum, w.LineNum)).Distinct().Count();
-                        var lineBonus = distinctLines > 20 ? 1.2 : 1.0;
-                        var score = words.Count * (avgConf / 100.0) * segBonus * lineBonus;
+                        _logger.LogInformation("{Desc}: {Count} words, avgConf={Avg:F0}",
+                            desc, words.Count, words.Average(w => w.Confidence));
 
-                        _logger.LogInformation("{Desc}: {Count} words, avgConf={Conf:F0}, avgLen={Len:F1}, lines={Lines}, score={Score:F0}",
-                            desc, words.Count, avgConf, avgLen, distinctLines, score);
-
-                        if (score > bestScore)
+                        if (bestResult == null || words.Count > bestResult.Count)
                         {
                             bestResult = words;
-                            bestScore = score;
                             bestDesc = desc;
                         }
                     }
@@ -148,17 +136,17 @@ public class ImageImportService : IImageImportService
                     File.Delete(inputPath);
             }
 
-            // If we found a very good result with gentle preprocessing, use it
-            // Require high score (good segmentation + high confidence + many words)
-            if (bestResult != null && bestResult.Count > 200 && bestScore > 150)
+            // Use first strategy that gives a decent result (>50 words).
+            // Original image or gentle grayscale preserves spatial structure best.
+            if (bestResult != null && bestResult.Count > 50)
             {
-                _logger.LogInformation("Using best result: {Desc} with score={Score:F0}", bestDesc, bestScore);
+                _logger.LogInformation("Using result: {Desc} with {Count} words", bestDesc, bestResult.Count);
                 return bestResult;
             }
         }
 
-        _logger.LogInformation("Final best result: {Desc} with score={Score:F0}, {Count} words",
-            bestDesc, bestScore, bestResult?.Count ?? 0);
+        _logger.LogInformation("Final best result: {Desc} with {Count} words",
+            bestDesc, bestResult?.Count ?? 0);
         return bestResult ?? new List<OcrWord>();
     }
 
@@ -392,6 +380,9 @@ public class ImageImportService : IImageImportService
             {
                 var cellWords = GetCellWords(words, day, meal);
                 var foodItems = ExtractFoodItems(cellWords);
+
+                _logger.LogInformation("Cell {Day}/{Meal}: {Words} words → {Items} food items",
+                    day.Label, meal.MealType, cellWords.Count, foodItems.Count);
 
                 if (foodItems.Count > 0)
                 {
@@ -908,49 +899,41 @@ public class ImageImportService : IImageImportService
     {
         if (cellWords.Count == 0) return new List<FoodItem>();
 
-        // Strategy 1: Group by Tesseract's native line grouping (BlockNum, ParNum, LineNum)
-        // This is more reliable than Y-position heuristics since Tesseract knows
-        // which words belong on the same line
-        var tsvGroups = cellWords
-            .GroupBy(w => (w.BlockNum, w.ParNum, w.LineNum))
-            .OrderBy(g => g.Min(w => w.Top))
-            .ThenBy(g => g.Min(w => w.Left))
-            .ToList();
+        // Group words into lines by Y position.
+        // Sort by Y first, then detect line breaks by looking at gaps between consecutive words.
+        var sorted = cellWords.OrderBy(w => w.CenterY).ThenBy(w => w.Left).ToList();
 
-        List<string> textLines;
+        // Calculate gaps between consecutive words (by Y)
+        var yGaps = new List<double>();
+        for (int i = 1; i < sorted.Count; i++)
+            yGaps.Add(sorted[i].CenterY - sorted[i - 1].CenterY);
 
-        if (tsvGroups.Count >= 2)
+        // Find the threshold: words on the same text line have very small Y gaps (~0-5px).
+        // Words on different food lines have larger gaps (20-100px+).
+        // Use half the average word height as minimum line break threshold.
+        var avgHeight = sorted.Average(w => (double)w.Height);
+        var lineBreakThreshold = Math.Max(avgHeight * 0.4, 8);
+
+        var lines = new List<List<OcrWord>>();
+        var currentLine = new List<OcrWord> { sorted[0] };
+
+        for (int i = 1; i < sorted.Count; i++)
         {
-            // Tesseract detected multiple lines - use its grouping
-            textLines = BuildTextLines(tsvGroups.Select(g =>
-                string.Join(" ", g.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
-        }
-        else
-        {
-            // Fallback: Group by Y position (when Tesseract puts everything on one line)
-            // Use first word's CenterY as anchor to prevent chaining
-            var yLines = new List<List<OcrWord>>();
-            foreach (var word in cellWords)
+            var gap = sorted[i].CenterY - sorted[i - 1].CenterY;
+            if (gap > lineBreakThreshold)
             {
-                var matched = false;
-                foreach (var line in yLines)
-                {
-                    // Compare against the FIRST word in the line (anchor), not any word
-                    if (Math.Abs(line[0].CenterY - word.CenterY) < word.Height * 0.8)
-                    {
-                        line.Add(word);
-                        matched = true;
-                        break;
-                    }
-                }
-                if (!matched)
-                    yLines.Add(new List<OcrWord> { word });
+                lines.Add(currentLine);
+                currentLine = new List<OcrWord> { sorted[i] };
             }
-
-            textLines = BuildTextLines(yLines
-                .OrderBy(l => l[0].Top)
-                .Select(l => string.Join(" ", l.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
+            else
+            {
+                currentLine.Add(sorted[i]);
+            }
         }
+        lines.Add(currentLine);
+
+        var textLines = BuildTextLines(lines
+            .Select(l => string.Join(" ", l.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
 
         var items = new List<FoodItem>();
         foreach (var line in textLines)
