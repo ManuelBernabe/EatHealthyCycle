@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using EatHealthyCycle.Data;
@@ -105,14 +106,18 @@ public class ListaCompraService : IListaCompraService
     }
 
     /// <summary>
-    /// Normalize a food name: strip special chars, collapse whitespace.
+    /// Normalize a food name: whitelist approach - only keep letters, digits, basic punctuation.
     /// </summary>
     private static string NormalizeName(string name)
     {
-        // Strip box/bullet characters
-        name = Regex.Replace(name, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", "");
-        // Collapse whitespace and trim
-        name = Regex.Replace(name, @"\s{2,}", " ").Trim();
+        var sb = new StringBuilder();
+        foreach (var c in name)
+        {
+            if (char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '–' ||
+                c == '(' || c == ')' || c == '.' || c == ',' || c == '/')
+                sb.Append(c);
+        }
+        name = Regex.Replace(sb.ToString().Trim(), @"\s{2,}", " ");
         name = name.Trim('-', '–', '—', ' ', '*');
         return name;
     }

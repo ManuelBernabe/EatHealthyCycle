@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using EatHealthyCycle.Data;
 using EatHealthyCycle.Models;
@@ -76,9 +77,13 @@ public class PdfImportService : IPdfImportService
 
         foreach (var dia in dieta.Dias)
         {
-            _logger.LogInformation("  Day {Day}: {Meals} meals, {Foods} total foods",
-                dia.DiaSemana, dia.Comidas.Count,
-                dia.Comidas.Sum(c => c.Alimentos.Count));
+            _logger.LogInformation("  Day {Day}: {Meals} meals",
+                dia.DiaSemana, dia.Comidas.Count);
+            foreach (var c in dia.Comidas)
+            {
+                _logger.LogInformation("    {Tipo}: {Foods}",
+                    c.Tipo, string.Join(", ", c.Alimentos.Select(a => $"{a.Nombre} ({a.Cantidad})")));
+            }
         }
 
         _db.Dietas.Add(dieta);
@@ -86,34 +91,51 @@ public class PdfImportService : IPdfImportService
         return dieta;
     }
 
+    // ==================== CHARACTER CLEANING ====================
+
     /// <summary>
-    /// Clean a word's text: strip bullet/box chars, trim whitespace.
+    /// Whitelist-based cleaning: only keep letters (incl. accented), digits, and basic punctuation.
+    /// This catches ALL garbage characters regardless of Unicode block.
     /// </summary>
-    private static string CleanWordText(string text)
+    private static string CleanText(string text)
     {
-        // Remove □, •, ■, ▪, ●, ○ and other common bullet/box characters
-        var cleaned = Regex.Replace(text, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", "").Trim();
-        return cleaned;
+        var sb = new StringBuilder();
+        foreach (var c in text)
+        {
+            if (char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '–' || c == '—' ||
+                c == '(' || c == ')' || c == '.' || c == ',' || c == '+' || c == '/' ||
+                c == 'á' || c == 'é' || c == 'í' || c == 'ó' || c == 'ú' || c == 'ñ' ||
+                c == 'Á' || c == 'É' || c == 'Í' || c == 'Ó' || c == 'Ú' || c == 'Ñ' ||
+                c == 'ü' || c == 'Ü')
+                sb.Append(c);
+        }
+        return Regex.Replace(sb.ToString().Trim(), @"\s{2,}", " ");
     }
 
     /// <summary>
-    /// Process a single PDF page that contains a table with day columns.
-    /// Each day has a pair of columns: INGESTA (meal type) + INGREDIENTES (food items).
+    /// Check if a word is a bullet/symbol character (non-alphanumeric single char).
+    /// PdfPig extracts Wingdings bullets as Private Use Area chars (U+F0B7 etc.)
     /// </summary>
+    private static bool IsBulletWord(Word word)
+    {
+        var text = word.Text.Trim();
+        if (text.Length == 0) return false;
+        if (text.Length > 2) return false;
+        return text.All(c => !char.IsLetterOrDigit(c));
+    }
+
+    // ==================== TABLE PAGE PROCESSING ====================
+
     private static void ProcessTablePage(Page page, Dictionary<int, DietaDia> dias, ILogger logger)
     {
-        var rawWords = page.GetWords().ToList();
-        if (rawWords.Count == 0) return;
+        var allWords = page.GetWords().ToList();
+        if (allWords.Count == 0) return;
 
-        // Clean all words: strip bullet/box characters, filter out empty/garbage
-        var words = rawWords
-            .Select(w => (word: w, cleanText: CleanWordText(w.Text)))
-            .Where(x => !string.IsNullOrWhiteSpace(x.cleanText) && x.cleanText.Length >= 1)
-            .Select(x => x.word)
-            .ToList();
+        // Use all words (including bullets) for structure detection
+        // Filter bullets only when building food item text
 
-        // Step 1: Find DIA headers and their X positions
-        var diaHeaders = FindDiaHeaders(words);
+        // Step 1: Find DIA headers
+        var diaHeaders = FindDiaHeaders(allWords);
         if (diaHeaders.Count == 0) return;
 
         logger.LogInformation("Page {Page}: Found {Count} DIA headers: {Headers}",
@@ -121,8 +143,8 @@ public class PdfImportService : IPdfImportService
             string.Join(", ", diaHeaders.Select(h => $"DIA {h.diaNum} at X={h.xCenter:F0}")));
 
         // Step 2: Find INGREDIENTES column headers
-        var ingredientesHeaders = words
-            .Where(w => w.Text.Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
+        var ingredientesHeaders = allWords
+            .Where(w => CleanText(w.Text).Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
             .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
             .OrderBy(w => w.xLeft)
             .ToList();
@@ -159,7 +181,7 @@ public class PdfImportService : IPdfImportService
         }
 
         // Step 4: Find all unique meal type labels with their Y positions
-        var mealLabels = FindMealLabels(words);
+        var mealLabels = FindMealLabels(allWords);
 
         logger.LogInformation("Page {Page}: Found {Count} meal labels: {Labels}",
             page.Number, mealLabels.Count,
@@ -183,7 +205,7 @@ public class PdfImportService : IPdfImportService
             mealRows.Add((sortedMeals[i].tipo, yTop, yBottom));
         }
 
-        // Step 6: For each day column x each meal row, collect food words
+        // Step 6: For each day column x each meal row, extract food items
         foreach (var col in dayColumns)
         {
             if (!dias.ContainsKey(col.diaNum))
@@ -200,7 +222,8 @@ public class PdfImportService : IPdfImportService
 
             foreach (var row in mealRows)
             {
-                var cellWords = words
+                // Get ALL words in this cell (including bullet words for delimiter detection)
+                var cellWords = allWords
                     .Where(w =>
                     {
                         var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
@@ -212,12 +235,10 @@ public class PdfImportService : IPdfImportService
 
                 if (cellWords.Count == 0) continue;
 
-                var lines = GroupWordsIntoLines(cellWords);
-                var foodLines = lines
-                    .Where(l => !IsNoiseLine(l) && !IsMealTypeHeader(l))
-                    .ToList();
+                // Extract food items using bullet-aware merging
+                var foodItems = ExtractFoodItemsFromCell(cellWords);
 
-                if (foodLines.Count == 0) continue;
+                if (foodItems.Count == 0) continue;
 
                 var existingComida = dia.Comidas.FirstOrDefault(c => c.Tipo == row.tipo);
                 if (existingComida == null)
@@ -226,11 +247,97 @@ public class PdfImportService : IPdfImportService
                     dia.Comidas.Add(existingComida);
                 }
 
-                var fullText = string.Join("\n", foodLines);
-                ParseFoodItems(existingComida, fullText);
+                foreach (var foodText in foodItems)
+                {
+                    var (nombre, cantidad) = ParseAlimento(foodText);
+                    nombre = CleanText(nombre).Trim();
+                    if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
+
+                    if (!existingComida.Alimentos.Any(a =>
+                        CleanText(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        existingComida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
+                    }
+                }
             }
         }
     }
+
+    /// <summary>
+    /// Extract food items from a table cell using bullet-aware line merging.
+    /// Key insight: bullet characters mark the START of a new food item.
+    /// Lines without a leading bullet are continuations of the previous item.
+    /// </summary>
+    private static List<string> ExtractFoodItemsFromCell(List<Word> cellWords)
+    {
+        if (cellWords.Count == 0) return new List<string>();
+
+        // Group words into lines by Y position (tolerance 4pt)
+        var sorted = cellWords.OrderByDescending(w => w.BoundingBox.Bottom).ToList();
+        var lineGroups = new List<List<Word>>();
+        var currentLine = new List<Word> { sorted[0] };
+        var currentY = sorted[0].BoundingBox.Bottom;
+
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            if (Math.Abs(sorted[i].BoundingBox.Bottom - currentY) <= 4)
+            {
+                currentLine.Add(sorted[i]);
+            }
+            else
+            {
+                lineGroups.Add(currentLine);
+                currentLine = new List<Word> { sorted[i] };
+                currentY = sorted[i].BoundingBox.Bottom;
+            }
+        }
+        lineGroups.Add(currentLine);
+
+        // Process each line: detect if it starts with a bullet, clean the text
+        var foodItems = new List<string>();
+        var currentItemParts = new List<string>();
+
+        foreach (var lineWords in lineGroups)
+        {
+            var orderedWords = lineWords.OrderBy(w => w.BoundingBox.Left).ToList();
+
+            // Check if this line starts with a bullet character
+            bool startsWithBullet = IsBulletWord(orderedWords[0]);
+
+            // Build clean text from non-bullet words
+            var cleanedParts = orderedWords
+                .Where(w => !IsBulletWord(w))
+                .Select(w => CleanText(w.Text))
+                .Where(t => !string.IsNullOrWhiteSpace(t));
+            var lineText = string.Join(" ", cleanedParts).Trim();
+
+            if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
+            if (IsNoiseLine(lineText) || IsMealTypeHeader(lineText)) continue;
+
+            if (startsWithBullet && currentItemParts.Count > 0)
+            {
+                // Save the previous food item
+                var itemText = string.Join(" ", currentItemParts);
+                if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                    foodItems.Add(itemText);
+                currentItemParts.Clear();
+            }
+
+            currentItemParts.Add(lineText);
+        }
+
+        // Don't forget the last item
+        if (currentItemParts.Count > 0)
+        {
+            var itemText = string.Join(" ", currentItemParts);
+            if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                foodItems.Add(itemText);
+        }
+
+        return foodItems;
+    }
+
+    // ==================== HEADER DETECTION ====================
 
     private static List<(int diaNum, double xLeft, double xCenter)> FindDiaHeaders(List<Word> words)
     {
@@ -239,7 +346,8 @@ public class PdfImportService : IPdfImportService
         for (int i = 0; i < words.Count; i++)
         {
             var w = words[i];
-            if (!Regex.IsMatch(w.Text, @"^DIA$|^D[ÍI]A$", RegexOptions.IgnoreCase))
+            var cleanW = CleanText(w.Text);
+            if (!Regex.IsMatch(cleanW, @"^DIA$|^D[ÍI]A$", RegexOptions.IgnoreCase))
                 continue;
 
             for (int j = i + 1; j < Math.Min(i + 5, words.Count); j++)
@@ -248,7 +356,8 @@ public class PdfImportService : IPdfImportService
                 if (Math.Abs(next.BoundingBox.Bottom - w.BoundingBox.Bottom) > 15)
                     continue;
 
-                if (int.TryParse(next.Text, out var num) && num >= 1 && num <= 7)
+                var cleanNext = CleanText(next.Text);
+                if (int.TryParse(cleanNext, out var num) && num >= 1 && num <= 7)
                 {
                     var xCenter = (w.BoundingBox.Left + next.BoundingBox.Right) / 2;
                     if (!result.Any(r => r.diaNum == num))
@@ -266,19 +375,21 @@ public class PdfImportService : IPdfImportService
         var result = new List<(TipoComida tipo, double yCenter, double xCenter)>();
         var processed = new HashSet<int>();
 
-        // Find "PRE DESAYUNO" (two words)
+        // Find "PRE DESAYUNO" (two words, possibly on different lines within tolerance)
         for (int i = 0; i < words.Count; i++)
         {
             if (processed.Contains(i)) continue;
             var w = words[i];
+            var cleanW = CleanText(w.Text);
 
-            if (Regex.IsMatch(w.Text, @"^PRE$", RegexOptions.IgnoreCase))
+            if (Regex.IsMatch(cleanW, @"^PRE$", RegexOptions.IgnoreCase))
             {
-                for (int j = i + 1; j < Math.Min(i + 4, words.Count); j++)
+                for (int j = i + 1; j < Math.Min(i + 6, words.Count); j++)
                 {
-                    if (Math.Abs(words[j].BoundingBox.Bottom - w.BoundingBox.Bottom) > 20)
+                    if (Math.Abs(words[j].BoundingBox.Bottom - w.BoundingBox.Bottom) > 25)
                         continue;
-                    if (Regex.IsMatch(words[j].Text, @"^DESAYUNO$", RegexOptions.IgnoreCase))
+                    var cleanJ = CleanText(words[j].Text);
+                    if (Regex.IsMatch(cleanJ, @"^DESAYUNO$", RegexOptions.IgnoreCase))
                     {
                         var yc = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
                         var xc = (w.BoundingBox.Left + words[j].BoundingBox.Right) / 2;
@@ -296,12 +407,12 @@ public class PdfImportService : IPdfImportService
         {
             if (processed.Contains(i)) continue;
             var w = words[i];
-            var text = w.Text.Trim();
+            var cleanW = CleanText(w.Text);
 
             foreach (var (pattern, tipo) in MealPatterns)
             {
                 if (pattern.Contains("\\s")) continue;
-                if (Regex.IsMatch(text, $@"^{pattern}$", RegexOptions.IgnoreCase))
+                if (Regex.IsMatch(cleanW, $@"^{pattern}$", RegexOptions.IgnoreCase))
                 {
                     var yc = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
                     var xc = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
@@ -317,9 +428,9 @@ public class PdfImportService : IPdfImportService
             .GroupBy(r => r.tipo)
             .SelectMany(g =>
             {
-                var sorted = g.OrderByDescending(r => r.yCenter).ToList();
+                var sortedG = g.OrderByDescending(r => r.yCenter).ToList();
                 var unique = new List<(TipoComida tipo, double yCenter, double xCenter)>();
-                foreach (var item in sorted)
+                foreach (var item in sortedG)
                 {
                     if (!unique.Any(u => Math.Abs(u.yCenter - item.yCenter) < 30))
                         unique.Add(item);
@@ -331,106 +442,20 @@ public class PdfImportService : IPdfImportService
         return deduped;
     }
 
-    private static List<string> GroupWordsIntoLines(List<Word> words)
-    {
-        if (words.Count == 0) return new List<string>();
-
-        // Group words by Y position with tolerance of 4 points
-        var sorted = words.OrderByDescending(w => w.BoundingBox.Bottom).ToList();
-        var lines = new List<List<Word>>();
-        var currentLine = new List<Word> { sorted[0] };
-        var currentY = sorted[0].BoundingBox.Bottom;
-
-        for (int i = 1; i < sorted.Count; i++)
-        {
-            if (Math.Abs(sorted[i].BoundingBox.Bottom - currentY) <= 4)
-            {
-                currentLine.Add(sorted[i]);
-            }
-            else
-            {
-                lines.Add(currentLine);
-                currentLine = new List<Word> { sorted[i] };
-                currentY = sorted[i].BoundingBox.Bottom;
-            }
-        }
-        lines.Add(currentLine);
-
-        return lines
-            .Select(lineWords =>
-            {
-                var text = string.Join(" ", lineWords.OrderBy(w => w.BoundingBox.Left)
-                    .Select(w => CleanWordText(w.Text))
-                    .Where(t => !string.IsNullOrWhiteSpace(t)));
-                // Collapse multiple spaces
-                return Regex.Replace(text, @"\s{2,}", " ").Trim();
-            })
-            .Where(l => !string.IsNullOrWhiteSpace(l) && l.Length >= 2)
-            .ToList();
-    }
-
-    private static void ParseFoodItems(Comida comida, string texto)
-    {
-        // Clean all □/bullet chars from the entire text first
-        texto = Regex.Replace(texto, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", " ");
-        texto = Regex.Replace(texto, @"\s{2,}", " ");
-
-        var lines = texto.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var rawLine in lines)
-        {
-            var line = Regex.Replace(rawLine, @"^[\-•\*\s]+", "").Trim();
-            if (string.IsNullOrWhiteSpace(line) || line.Length < 2) continue;
-            if (IsNoiseLine(line)) continue;
-            if (IsMealTypeHeader(line)) continue;
-
-            // Split on common separators: bullets, commas between food items, "+"
-            var items = Regex.Split(line, @"[•\u2022]\s*");
-            foreach (var item in items)
-            {
-                var cleaned = item.Trim().Trim('-', '*', ' ');
-                if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length < 2) continue;
-                if (IsMealTypeHeader(cleaned)) continue;
-
-                var (nombre, cantidad) = ParseAlimento(cleaned);
-                nombre = NormalizeFoodName(nombre);
-                if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
-
-                if (!comida.Alimentos.Any(a => NormalizeFoodName(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
-                {
-                    comida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Normalize a food name: strip special chars, collapse whitespace, title case.
-    /// </summary>
-    private static string NormalizeFoodName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name)) return name;
-        // Strip box/bullet characters
-        name = Regex.Replace(name, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", "");
-        // Collapse whitespace
-        name = Regex.Replace(name, @"\s{2,}", " ").Trim();
-        // Remove trailing dashes/hyphens
-        name = name.Trim('-', '–', '—', ' ');
-        return name;
-    }
+    // ==================== FOOD ITEM PARSING ====================
 
     private static (string nombre, string? cantidad) ParseAlimento(string linea)
     {
-        linea = linea.Trim().Trim('-', '•', '*', ' ');
+        linea = CleanText(linea).Trim();
 
-        // "HARINA DE AVENA- 100G"
+        // "HARINA DE AVENA- 100G" or "HARINA DE AVENA 100G"
         var matchSuffix = Regex.Match(linea,
             @"^(.+?)\s*[\-–]?\s*(\d+\s*(?:g|gr|mg|kg|ml|l|cl|ud|unidades?|rebanadas?|cucharadas?|vasos?|tazas?|piezas?|latas?))\s*$",
             RegexOptions.IgnoreCase);
         if (matchSuffix.Success)
             return (matchSuffix.Groups[1].Value.Trim(), matchSuffix.Groups[2].Value.Trim());
 
-        // "PROTEINA WHEY 20G"
+        // "PROTEINA WHEY 20G" (quantity embedded)
         var matchEmbedded = Regex.Match(linea,
             @"^(.+?)\s+(\d+\s*(?:G|GR|MG|KG|ML|L|CL))\b(.*)$",
             RegexOptions.IgnoreCase);
@@ -444,14 +469,14 @@ public class PdfImportService : IPdfImportService
             return (nombre, cantidad);
         }
 
-        // "2 UNIDADES de X"
+        // "3 REBANADAS (60G)" or "2 UNIDADES"
         var matchPrefix = Regex.Match(linea,
             @"^(\d+\s*(?:unidades?|rebanadas?|cucharadas?|latas?|rodajas?))\s+(?:de\s+)?(.+)$",
             RegexOptions.IgnoreCase);
         if (matchPrefix.Success)
             return (matchPrefix.Groups[2].Value.Trim(), matchPrefix.Groups[1].Value.Trim());
 
-        // "PAN (60G)"
+        // "PAN (60G)" or "AGUACATE (100G)"
         var matchParen = Regex.Match(linea, @"^(.+?)\s*\((.+?)\)\s*$");
         if (matchParen.Success)
             return (matchParen.Groups[1].Value.Trim(), matchParen.Groups[2].Value.Trim());
@@ -459,9 +484,8 @@ public class PdfImportService : IPdfImportService
         return (linea.Trim(), null);
     }
 
-    /// <summary>
-    /// Parse the "Día off" section (plain text, not table)
-    /// </summary>
+    // ==================== DÍA OFF (PLAIN TEXT) ====================
+
     private static void ParseDiaOff(string texto, Dieta dieta)
     {
         var match = Regex.Match(texto, @"D[ií]a\s+off[^:]*:", RegexOptions.IgnoreCase);
@@ -536,7 +560,7 @@ public class PdfImportService : IPdfImportService
         var items = Regex.Split(line, @"\s*\+\s*");
         foreach (var item in items)
         {
-            var cleaned = item.Trim().Trim('-', '•', '*');
+            var cleaned = CleanText(item).Trim('-', ' ');
             if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length < 2) continue;
 
             if (Regex.IsMatch(cleaned, @"\s+o\s+", RegexOptions.IgnoreCase))
@@ -558,10 +582,13 @@ public class PdfImportService : IPdfImportService
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length < 2) return;
         var (nombre, cantidad) = ParseAlimento(text);
+        nombre = CleanText(nombre).Trim();
         if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) return;
-        if (!comida.Alimentos.Any(a => a.Nombre.Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+        if (!comida.Alimentos.Any(a => CleanText(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
             comida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
     }
+
+    // ==================== PLAIN TEXT EXTRACTION ====================
 
     private static string ExtractPlainText(List<Page> pages)
     {
@@ -572,7 +599,7 @@ public class PdfImportService : IPdfImportService
             if (words.Count == 0)
             {
                 if (!string.IsNullOrWhiteSpace(page.Text))
-                    allLines.Add(Regex.Replace(page.Text, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", " "));
+                    allLines.Add(CleanText(page.Text));
                 continue;
             }
 
@@ -580,7 +607,8 @@ public class PdfImportService : IPdfImportService
                 .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
                 .OrderByDescending(g => g.Key)
                 .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left)
-                    .Select(w => CleanWordText(w.Text))
+                    .Where(w => !IsBulletWord(w))
+                    .Select(w => CleanText(w.Text))
                     .Where(t => !string.IsNullOrWhiteSpace(t))).Trim())
                 .Where(l => !string.IsNullOrWhiteSpace(l) && l.Length >= 2);
 
@@ -589,10 +617,14 @@ public class PdfImportService : IPdfImportService
         return string.Join("\n", allLines);
     }
 
+    // ==================== NOISE FILTERS ====================
+
     private static bool IsNoiseLine(string linea)
     {
         var l = linea.Trim().ToLowerInvariant();
         if (l.Length < 2) return true;
+        // Standalone "PRE" is noise (part of PRE DESAYUNO label)
+        if (l == "pre") return true;
         if (Regex.IsMatch(l, @"^(ingesta|ingredientes|rganutri|plan\s+nutricional|cuestionario|gasto\s+energ|necesidades\s+h[ií]dricas|datos\s+antropom|check\s+inicial|fecha|cita|peso|talla|perfil|espalda|manu)\b"))
             return true;
         if (Regex.IsMatch(l, @"^[\d\.\…]+$")) return true;
@@ -604,8 +636,10 @@ public class PdfImportService : IPdfImportService
 
     private static bool IsMealTypeHeader(string linea)
     {
-        var l = linea.Trim().ToLowerInvariant();
-        l = Regex.Replace(l, @"^[\-•\*\s]+", "");
+        var l = CleanText(linea).Trim().ToLowerInvariant();
+        l = Regex.Replace(l, @"^[\-\s]+", "");
+        // Standalone "PRE" is part of PRE DESAYUNO
+        if (l == "pre") return true;
         foreach (var (pattern, _) in MealPatterns)
         {
             if (Regex.IsMatch(l, $@"^{pattern}$", RegexOptions.IgnoreCase))
