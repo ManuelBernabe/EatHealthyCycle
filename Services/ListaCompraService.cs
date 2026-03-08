@@ -16,7 +16,8 @@ public class ListaCompraService : IListaCompraService
     private static readonly HashSet<string> MealTypeWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA",
-        "PRE", "PREDESAYUNO", "MEDIA", "MAÑANA", "MEDIAMANANA"
+        "PRE", "PREDESAYUNO", "MEDIA", "MAÑANA", "MEDIAMANANA",
+        "TENTEMPIÉ", "TENTEMPIE"
     };
 
     // Prepositions that indicate the food name continues on the next comma-separated part

@@ -28,6 +28,7 @@ public class PdfImportService : IPdfImportService
     {
         ("pre\\s*desayuno", TipoComida.PreDesayuno),
         ("media\\s*ma[ñn]ana", TipoComida.MediaManana),
+        ("tentempi[eé]", TipoComida.Almuerzo),  // Tentempié = mid-morning snack → Almuerzo slot
         ("desayuno", TipoComida.Desayuno),
         ("almuerzo", TipoComida.Almuerzo),
         ("comida", TipoComida.Comida),
@@ -107,7 +108,7 @@ public class PdfImportService : IPdfImportService
         foreach (var c in text)
         {
             if (char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '–' || c == '—' ||
-                c == '(' || c == ')' || c == '.' || c == ',' || c == '+' || c == '/' ||
+                c == '(' || c == ')' || c == '.' || c == ',' || c == '+' || c == '/' || c == ':' || c == '%' ||
                 c == 'á' || c == 'é' || c == 'í' || c == 'ó' || c == 'ú' || c == 'ñ' ||
                 c == 'Á' || c == 'É' || c == 'Í' || c == 'Ó' || c == 'Ú' || c == 'Ñ' ||
                 c == 'ü' || c == 'Ü')
@@ -675,6 +676,15 @@ public class PdfImportService : IPdfImportService
     {
         linea = CleanText(linea).Trim();
 
+        // "Bebida de soja con calcio: 300g (1 taza)" — colon-separated format
+        var matchColon = Regex.Match(linea, @"^(.+?):\s*(.+)$");
+        if (matchColon.Success)
+        {
+            var nombre = matchColon.Groups[1].Value.Trim();
+            var cantidadPart = matchColon.Groups[2].Value.Trim();
+            return (nombre, cantidadPart);
+        }
+
         // "HARINA DE AVENA- 100G" or "HARINA DE AVENA 100G"
         var matchSuffix = Regex.Match(linea,
             @"^(.+?)\s*[\-–]?\s*(\d+\s*(?:g|gr|mg|kg|ml|l|cl|ud|unidades?|rebanadas?|cucharadas?|vasos?|tazas?|piezas?|latas?))\s*$",
@@ -892,7 +902,7 @@ public class PdfImportService : IPdfImportService
 
     private static readonly HashSet<string> MealTypeWords = new(StringComparer.OrdinalIgnoreCase)
     {
-        "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA"
+        "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA", "TENTEMPIÉ", "TENTEMPIE"
     };
 
     /// <summary>
@@ -938,7 +948,7 @@ public class PdfImportService : IPdfImportService
         if (l.Length <= 3 && Prepositions.Contains(l.Trim())) return true;
         // Lines starting with "-" followed by meal names (Día off format: "-Desayuno ...", "-Comida ...")
         if (Regex.IsMatch(l, @"^-?\s*nac\b")) return true;
-        if (Regex.IsMatch(l, @"^-\s*(desayuno|almuerzo|comida|merienda|cena)\b")) return true;
+        if (Regex.IsMatch(l, @"^-\s*(desayuno|almuerzo|comida|merienda|cena|tentempi[eé])\b")) return true;
         // Long lines with mixed meal labels inside (typical of Día off / supplement blobs)
         if (l.Length > 60) return true;
         // Contains "+" as separator (supplement combinations: "proteína whey 40g+ canela")
@@ -951,6 +961,8 @@ public class PdfImportService : IPdfImportService
     {
         var l = CleanText(linea).Trim().ToLowerInvariant();
         l = Regex.Replace(l, @"^[\-\s]+", "");
+        // Strip trailing numbers (e.g., "Tentempié 1", "Merienda 1")
+        l = Regex.Replace(l, @"\s*\d+\s*$", "").Trim();
         // Standalone "PRE" is part of PRE DESAYUNO
         if (l == "pre") return true;
         foreach (var (pattern, _) in MealPatterns)
