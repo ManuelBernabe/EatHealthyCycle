@@ -87,13 +87,30 @@ public class PdfImportService : IPdfImportService
     }
 
     /// <summary>
+    /// Clean a word's text: strip bullet/box chars, trim whitespace.
+    /// </summary>
+    private static string CleanWordText(string text)
+    {
+        // Remove □, •, ■, ▪, ●, ○ and other common bullet/box characters
+        var cleaned = Regex.Replace(text, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", "").Trim();
+        return cleaned;
+    }
+
+    /// <summary>
     /// Process a single PDF page that contains a table with day columns.
     /// Each day has a pair of columns: INGESTA (meal type) + INGREDIENTES (food items).
     /// </summary>
     private static void ProcessTablePage(Page page, Dictionary<int, DietaDia> dias, ILogger logger)
     {
-        var words = page.GetWords().ToList();
-        if (words.Count == 0) return;
+        var rawWords = page.GetWords().ToList();
+        if (rawWords.Count == 0) return;
+
+        // Clean all words: strip bullet/box characters, filter out empty/garbage
+        var words = rawWords
+            .Select(w => (word: w, cleanText: CleanWordText(w.Text)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.cleanText) && x.cleanText.Length >= 1)
+            .Select(x => x.word)
+            .ToList();
 
         // Step 1: Find DIA headers and their X positions
         var diaHeaders = FindDiaHeaders(words);
@@ -318,16 +335,46 @@ public class PdfImportService : IPdfImportService
     {
         if (words.Count == 0) return new List<string>();
 
-        return words
-            .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
-            .OrderByDescending(g => g.Key)
-            .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim())
-            .Where(l => !string.IsNullOrWhiteSpace(l))
+        // Group words by Y position with tolerance of 4 points
+        var sorted = words.OrderByDescending(w => w.BoundingBox.Bottom).ToList();
+        var lines = new List<List<Word>>();
+        var currentLine = new List<Word> { sorted[0] };
+        var currentY = sorted[0].BoundingBox.Bottom;
+
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            if (Math.Abs(sorted[i].BoundingBox.Bottom - currentY) <= 4)
+            {
+                currentLine.Add(sorted[i]);
+            }
+            else
+            {
+                lines.Add(currentLine);
+                currentLine = new List<Word> { sorted[i] };
+                currentY = sorted[i].BoundingBox.Bottom;
+            }
+        }
+        lines.Add(currentLine);
+
+        return lines
+            .Select(lineWords =>
+            {
+                var text = string.Join(" ", lineWords.OrderBy(w => w.BoundingBox.Left)
+                    .Select(w => CleanWordText(w.Text))
+                    .Where(t => !string.IsNullOrWhiteSpace(t)));
+                // Collapse multiple spaces
+                return Regex.Replace(text, @"\s{2,}", " ").Trim();
+            })
+            .Where(l => !string.IsNullOrWhiteSpace(l) && l.Length >= 2)
             .ToList();
     }
 
     private static void ParseFoodItems(Comida comida, string texto)
     {
+        // Clean all □/bullet chars from the entire text first
+        texto = Regex.Replace(texto, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", " ");
+        texto = Regex.Replace(texto, @"\s{2,}", " ");
+
         var lines = texto.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
         foreach (var rawLine in lines)
@@ -337,7 +384,8 @@ public class PdfImportService : IPdfImportService
             if (IsNoiseLine(line)) continue;
             if (IsMealTypeHeader(line)) continue;
 
-            var items = Regex.Split(line, @"[•]");
+            // Split on common separators: bullets, commas between food items, "+"
+            var items = Regex.Split(line, @"[•\u2022]\s*");
             foreach (var item in items)
             {
                 var cleaned = item.Trim().Trim('-', '*', ' ');
@@ -345,14 +393,30 @@ public class PdfImportService : IPdfImportService
                 if (IsMealTypeHeader(cleaned)) continue;
 
                 var (nombre, cantidad) = ParseAlimento(cleaned);
+                nombre = NormalizeFoodName(nombre);
                 if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
 
-                if (!comida.Alimentos.Any(a => a.Nombre.Equals(nombre, StringComparison.OrdinalIgnoreCase)))
+                if (!comida.Alimentos.Any(a => NormalizeFoodName(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
                 {
                     comida.Alimentos.Add(new Alimento { Nombre = nombre, Cantidad = cantidad });
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Normalize a food name: strip special chars, collapse whitespace, title case.
+    /// </summary>
+    private static string NormalizeFoodName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return name;
+        // Strip box/bullet characters
+        name = Regex.Replace(name, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", "");
+        // Collapse whitespace
+        name = Regex.Replace(name, @"\s{2,}", " ").Trim();
+        // Remove trailing dashes/hyphens
+        name = name.Trim('-', '–', '—', ' ');
+        return name;
     }
 
     private static (string nombre, string? cantidad) ParseAlimento(string linea)
@@ -508,15 +572,17 @@ public class PdfImportService : IPdfImportService
             if (words.Count == 0)
             {
                 if (!string.IsNullOrWhiteSpace(page.Text))
-                    allLines.Add(page.Text);
+                    allLines.Add(Regex.Replace(page.Text, @"[\u25A0-\u25FF\u2022\u2023\u25E6\u2043\u2219\u25CB\u25CF\u25A1\u25AA\u25AB□■•●○]", " "));
                 continue;
             }
 
             var lines = words
                 .GroupBy(w => Math.Round(w.BoundingBox.Bottom, 0))
                 .OrderByDescending(g => g.Key)
-                .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim())
-                .Where(l => !string.IsNullOrWhiteSpace(l));
+                .Select(g => string.Join(" ", g.OrderBy(w => w.BoundingBox.Left)
+                    .Select(w => CleanWordText(w.Text))
+                    .Where(t => !string.IsNullOrWhiteSpace(t))).Trim())
+                .Where(l => !string.IsNullOrWhiteSpace(l) && l.Length >= 2);
 
             allLines.AddRange(lines);
         }

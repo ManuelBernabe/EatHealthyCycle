@@ -484,6 +484,21 @@ const App = {
                     <button class="btn-delete-item" onclick="event.stopPropagation();App.deleteItemCompra(${item.id})">&times;</button>
                 </div>`;
         }
+
+        // Weekly totals summary
+        const itemsWithQty = items.filter(i => i.cantidad && i.cantidad.trim());
+        if (itemsWithQty.length > 0) {
+            html += `<div class="shop-category" style="margin-top:20px;font-size:16px;border-top:2px solid var(--primary);">Total semanal</div>`;
+            html += `<div class="card" style="margin:8px 16px;padding:12px;">`;
+            for (const item of itemsWithQty) {
+                html += `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);">
+                    <span>${item.nombre}</span>
+                    <strong>${item.cantidad}</strong>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+
         container.innerHTML = html;
     },
 
