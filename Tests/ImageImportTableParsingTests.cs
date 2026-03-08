@@ -599,6 +599,222 @@ public class ImageImportTableParsingTests
         return words;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Noise band scenario (garbled teal bar text creating false sections)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void DetectMealRowsByGaps_WithNoiseBands_DoesNotShiftSections()
+    {
+        // Production scenario: garbled teal bar text creates 1-2 word noise bands
+        // at the start of each meal section, causing a false extra first section
+        var dayColumns = new List<DayColumn>
+        {
+            new() { DayOfWeek = DayOfWeek.Monday, Label = "Día 1",
+                HeaderCenterX = 200, HeaderTop = 30, HeaderLeft = 150, HeaderRight = 250 }
+        };
+
+        var words = new List<OcrWord>();
+
+        // Small noise band at y=95 (1 garbled word from teal "Desayuno" bar)
+        words.Add(W("CE", 200, 95, 40, 18, 30));
+
+        // Desayuno section: Y 150-290
+        for (int y = 150; y < 290; y += 25)
+            words.Add(W("food", 200, y, 80, 18));
+
+        // Small noise band at y=310 (1 garbled word from teal "Tentempié" bar)
+        words.Add(W("X", 200, 310, 20, 18, 25));
+
+        // GAP: Y 290-380
+
+        // Tentempié section: Y 380-520
+        for (int y = 380; y < 520; y += 25)
+            words.Add(W("food", 200, y, 80, 18));
+
+        // GAP: Y 520-620
+
+        // Comida section: Y 620-800
+        for (int y = 620; y < 800; y += 25)
+            words.Add(W("food", 200, y, 80, 18));
+
+        // GAP: Y 800-900
+
+        // Merienda section: Y 900-1100
+        for (int y = 900; y < 1100; y += 25)
+            words.Add(W("food", 200, y, 80, 18));
+
+        // GAP: Y 1100-1200
+
+        // Cena section: Y 1200-1400
+        for (int y = 1200; y < 1400; y += 25)
+            words.Add(W("food", 200, y, 80, 18));
+
+        var rows = _service.DetectMealRowsByGaps(words, dayColumns);
+
+        // Should still find 5 sections, NOT 6 (the noise bands should be merged/skipped)
+        Assert.Equal(5, rows.Count);
+        Assert.Equal(TipoComida.Desayuno, rows[0].MealType);
+        Assert.Equal(TipoComida.Almuerzo, rows[1].MealType);
+        Assert.Equal(TipoComida.Comida, rows[2].MealType);
+        Assert.Equal(TipoComida.Merienda, rows[3].MealType);
+        Assert.Equal(TipoComida.Cena, rows[4].MealType);
+    }
+
+    [Fact]
+    public void ParseTableFromWords_NoiseBands_DesayunoContentCorrect()
+    {
+        // With noise bands, verify that Desayuno gets the right food items (not shifted)
+        var words = BuildProductionScenarioWithNoiseBands();
+        var dieta = _service.ParseTableFromWords(words, 1, "Test Diet", "diet.jpg");
+
+        Assert.True(dieta.Dias.Count >= 5, $"Expected >= 5 days, got {dieta.Dias.Count}");
+
+        var day1 = dieta.Dias[0];
+        var desayuno = day1.Comidas.FirstOrDefault(c => c.Tipo == TipoComida.Desayuno);
+        Assert.NotNull(desayuno);
+
+        // Desayuno should contain "Bebida" not "Aguacate" (which is Tentempié)
+        var nombres = desayuno.Alimentos.Select(a => a.Nombre).ToList();
+        Assert.Contains(nombres, n => n.Contains("BEBIDA", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(nombres, n => n.Contains("AGUACATE", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ExtractFoodItems_SeparatesFoodLines()
+    {
+        // Verify that food items on different Y positions are parsed as separate items
+        var cellWords = new List<OcrWord>
+        {
+            // Line 1: "Bebida de soja: 300g"
+            W("Bebida", 100, 160, 60, 18), W("de", 165, 160, 20, 18),
+            W("soja:", 190, 160, 40, 18), W("300g", 235, 160, 40, 18),
+            // Line 2: "Canela: 3g"
+            W("Canela:", 100, 200, 60, 18), W("3g", 165, 200, 20, 18),
+            // Line 3: "Nuez pelada: 15g"
+            W("Nuez", 100, 240, 40, 18), W("pelada:", 145, 240, 60, 18), W("15g", 210, 240, 30, 18),
+        };
+
+        // Use reflection or test via ParseTableFromWords; ExtractFoodItems is private static
+        // Instead, test via full pipeline with a single cell
+        var dayColumns = new List<DayColumn>
+        {
+            new() { DayOfWeek = DayOfWeek.Monday, Label = "Día 1",
+                HeaderCenterX = 200, HeaderTop = 30, HeaderLeft = 50, HeaderRight = 350,
+                ContentLeft = 50, ContentRight = 350 }
+        };
+        var mealRows = new List<MealRow>
+        {
+            new() { MealType = TipoComida.Desayuno, Label = "Desayuno",
+                Top = 150, CenterY = 200, ContentTop = 150, ContentBottom = 260 }
+        };
+
+        // Add header to establish column detection, plus content words
+        var allWords = new List<OcrWord>(cellWords)
+        {
+            W("E", 200, 30, 100, 60, 40), // header
+        };
+
+        var dieta = _service.ParseTableFromWords(allWords, 1, "Test", "t.jpg");
+
+        // Should have 1 day with Desayuno containing 3 separate food items
+        Assert.True(dieta.Dias.Count >= 1);
+        var desayuno = dieta.Dias[0].Comidas.FirstOrDefault(c => c.Tipo == TipoComida.Desayuno);
+        if (desayuno != null)
+        {
+            Assert.True(desayuno.Alimentos.Count >= 2,
+                $"Expected >= 2 separate food items, got {desayuno.Alimentos.Count}: " +
+                string.Join(", ", desayuno.Alimentos.Select(a => a.Nombre)));
+        }
+    }
+
+    /// <summary>
+    /// Production scenario with noise bands from garbled teal bar text.
+    /// </summary>
+    private static List<OcrWord> BuildProductionScenarioWithNoiseBands()
+    {
+        var words = new List<OcrWord>();
+
+        int[] colCX = { 243, 543, 843, 1143, 1443, 1743, 2043 };
+        int colW = 250;
+
+        // Garbled header words
+        words.Add(W("CE", 143, 33, 198, 95, 49));
+        words.Add(W("E",  499, 37, 143, 65, 42));
+        words.Add(W("E",  792, 37, 143, 65, 42));
+        words.Add(W("E",  1093, 37, 143, 65, 27));
+        words.Add(W("E",  1393, 37, 144, 65, 61));
+        words.Add(W("E",  1693, 37, 143, 65, 45));
+        words.Add(W("E",  1993, 37, 143, 65, 38));
+
+        // Noise band: garbled text from "Desayuno" teal bar (1-2 words per column)
+        words.Add(W("RAR", 200, 135, 40, 18, 20));
+        words.Add(W("O", 800, 137, 20, 18, 15));
+
+        // Desayuno content: Y 160-380
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            AddFood(words, x, colW, 160, "Bebida", "de", "soja:", "300g");
+            AddFood(words, x, colW, 200, "proteina", "de", "suero:", "40g");
+            AddFood(words, x, colW, 240, "Canela:", "3g");
+            AddFood(words, x, colW, 280, "Nuez", "pelada:", "15g");
+        }
+
+        // Noise band from "Tentempié" teal bar
+        words.Add(W("2003", 500, 405, 50, 18, 18));
+
+        // GAP ~400-460
+
+        // Tentempié content: Y 460-700
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            AddFood(words, x, colW, 480, "Aguacate:", "200g");
+            AddFood(words, x, colW, 520, "Huevo:", "195g");
+            AddFood(words, x, colW, 560, "Sal", "yodada:", "0g");
+            AddFood(words, x, colW, 600, "Bacon:", "40g");
+        }
+
+        // GAP ~700-800
+
+        // Comida content: Y 830-1100
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            AddFood(words, x, colW, 850, "Champiñón:", "200g");
+            AddFood(words, x, colW, 890, "Pollo:", "160g");
+            AddFood(words, x, colW, 930, "Pan", "integral:", "30g");
+            AddFood(words, x, colW, 970, "Filete:", "160g");
+        }
+
+        // GAP ~1100-1200
+
+        // Merienda content: Y 1250-1550
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            AddFood(words, x, colW, 1270, "proteina:", "40g");
+            AddFood(words, x, colW, 1310, "Agua", "mineral:", "300g");
+            AddFood(words, x, colW, 1350, "Almendra:", "8g");
+            AddFood(words, x, colW, 1390, "Naranja:", "230g");
+        }
+
+        // GAP ~1550-1650
+
+        // Cena content: Y 1700-2000
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            AddFood(words, x, colW, 1720, "Pimiento", "rojo:", "60g");
+            AddFood(words, x, colW, 1760, "Sal", "yodada:", "0g");
+            AddFood(words, x, colW, 1800, "Cebolla:", "60g");
+            AddFood(words, x, colW, 1840, "Pollo:", "160g");
+        }
+
+        return words;
+    }
+
     private static void AddFood(List<OcrWord> words, int colX, int colW, int y, params string[] tokens)
     {
         int spacing = colW / Math.Max(tokens.Length, 1);

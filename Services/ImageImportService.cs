@@ -78,15 +78,13 @@ public class ImageImportService : IImageImportService
         }
     }
 
-    // Preprocessing strategies for ImageMagick
+    // Preprocessing strategies: try gentlest first, then more aggressive
     private static readonly string[] PreprocessStrategies =
     {
-        // Strategy 1: High contrast to remove colored backgrounds (teal/beige table cells)
-        "-colorspace Gray -level 25%,75% -sharpen 0x1",
-        // Strategy 2: Binary threshold - pure black text on white background
-        "-colorspace Gray -level 30%,60% -threshold 50%",
-        // Strategy 3: Normalize + resize for low-res clean images
-        "-colorspace Gray -normalize -sharpen 0x1",
+        "",  // No preprocessing - original image (Tesseract handles color natively)
+        "-colorspace Gray",  // Just grayscale, preserve anti-aliasing
+        "-colorspace Gray -level 25%,75% -sharpen 0x1",  // High contrast
+        "-colorspace Gray -level 30%,60% -threshold 50%",  // Binary B&W
     };
 
     private async Task<List<OcrWord>> RunTesseractAsync(string imagePath)
@@ -94,40 +92,64 @@ public class ImageImportService : IImageImportService
         _logger.LogInformation("Running Tesseract on image: {Path} (size: {Size} bytes)",
             imagePath, new FileInfo(imagePath).Length);
 
-        // Try each preprocessing strategy with best PSM modes
+        List<OcrWord>? bestResult = null;
+        string bestDesc = "";
+
+        // Try each strategy and pick the one with the most words
         foreach (var strategy in PreprocessStrategies)
         {
-            var preprocessed = await PreprocessImageAsync(imagePath, strategy);
+            string inputPath;
+            if (string.IsNullOrEmpty(strategy))
+            {
+                inputPath = imagePath;
+            }
+            else
+            {
+                inputPath = await PreprocessImageAsync(imagePath, strategy);
+            }
+
             try
             {
-                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "3") })
+                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11") })
                 {
-                    var words = await TryTesseractAsync(preprocessed, lang, psm);
+                    var words = await TryTesseractAsync(inputPath, lang, psm);
+                    var desc = $"strategy='{strategy}' lang={lang} psm={psm}";
+
                     if (words.Count > 0)
                     {
-                        _logger.LogInformation("Success with strategy='{Strategy}' lang={Lang} psm={Psm}: {Count} words",
-                            strategy, lang, psm, words.Count);
-                        return words;
+                        _logger.LogInformation("{Desc}: {Count} words, avg conf={Avg:F0}",
+                            desc, words.Count, words.Average(w => w.Confidence));
+
+                        if (bestResult == null || words.Count > bestResult.Count)
+                        {
+                            bestResult = words;
+                            bestDesc = desc;
+                        }
+
+                        // If we got a very good result (>100 words), stop trying more strategies
+                        if (words.Count > 100)
+                        {
+                            _logger.LogInformation("Good result with {Desc}, using it", desc);
+                            return words;
+                        }
                     }
-                    _logger.LogInformation("No words with strategy='{Strategy}' lang={Lang} psm={Psm}", strategy, lang, psm);
                 }
             }
             finally
             {
-                if (preprocessed != imagePath && File.Exists(preprocessed))
-                    File.Delete(preprocessed);
+                if (inputPath != imagePath && File.Exists(inputPath))
+                    File.Delete(inputPath);
+            }
+
+            // If we found a decent result with original/gentle preprocessing, use it
+            if (bestResult != null && bestResult.Count > 30)
+            {
+                _logger.LogInformation("Using best result: {Desc} with {Count} words", bestDesc, bestResult.Count);
+                return bestResult;
             }
         }
 
-        // Final fallback: original image with English
-        var fallbackWords = await TryTesseractAsync(imagePath, "eng", "6");
-        if (fallbackWords.Count > 0)
-        {
-            _logger.LogInformation("Success with original image eng/psm6: {Count} words", fallbackWords.Count);
-            return fallbackWords;
-        }
-
-        return new List<OcrWord>();
+        return bestResult ?? new List<OcrWord>();
     }
 
     private async Task<string> PreprocessImageAsync(string imagePath, string convertArgs)
@@ -705,69 +727,124 @@ public class ImageImportService : IImageImportService
         var headerTop = dayColumns.Count > 0 ? dayColumns.Min(c => c.HeaderTop) : 0;
         var imageHeight = words.Max(w => w.Bottom) + 10;
 
-        // Get all words below the header, sorted by Y
-        var contentWords = words.Where(w => w.Top > headerTop + 30).OrderBy(w => w.Top).ToList();
+        // Skip well past the header area - teal bars with garbled text create false gaps
+        var contentStartY = Math.Max(headerTop + 80, (int)(imageHeight * 0.05));
+        var contentWords = words.Where(w => w.Top > contentStartY).OrderBy(w => w.Top).ToList();
         if (contentWords.Count < 10) return new List<MealRow>();
 
-        // Group words into Y-bands (horizontal lines of text)
-        var bands = new List<(int top, int bottom)>();
-        int bandTop = contentWords[0].Top;
-        int bandBottom = contentWords[0].Bottom;
+        _logger.LogInformation("Gap detection: contentStartY={StartY}, {Count} content words (imageHeight={Height})",
+            contentStartY, contentWords.Count, imageHeight);
 
-        foreach (var word in contentWords)
+        // Strategy: find the largest Y-gaps between consecutive words (sorted by Y)
+        // This directly finds section boundaries without fragile band-building
+        var avgHeight = contentWords.Average(w => (double)w.Height);
+
+        // Build unique Y-positions (top of each word row)
+        // Group words that are within avgHeight of each other into the same row
+        var sortedWords = contentWords.OrderBy(w => w.Top).ToList();
+        var rowBottoms = new List<(int bottom, int wordCount)>();
+        int currentRowTop = sortedWords[0].Top;
+        int currentRowBottom = sortedWords[0].Bottom;
+        int currentRowWords = 1;
+
+        foreach (var word in sortedWords.Skip(1))
         {
-            if (word.Top > bandBottom + 20) // new band if gap > 20px
+            // Use avgHeight * 1.5 as threshold - words on the same text line are very close
+            // while different food lines are spaced further apart
+            if (word.Top > currentRowBottom + avgHeight * 1.5)
             {
-                bands.Add((bandTop, bandBottom));
-                bandTop = word.Top;
+                rowBottoms.Add((currentRowBottom, currentRowWords));
+                currentRowTop = word.Top;
+                currentRowBottom = word.Bottom;
+                currentRowWords = 1;
             }
-            bandBottom = Math.Max(bandBottom, word.Bottom);
+            else
+            {
+                currentRowBottom = Math.Max(currentRowBottom, word.Bottom);
+                currentRowWords++;
+            }
         }
-        bands.Add((bandTop, bandBottom));
+        rowBottoms.Add((currentRowBottom, currentRowWords));
 
-        if (bands.Count < 3) return new List<MealRow>();
+        // Skip noise rows (< 3 words) at the beginning
+        while (rowBottoms.Count > 0 && rowBottoms[0].wordCount < 3)
+            rowBottoms.RemoveAt(0);
 
-        // Find gaps between bands
-        var gaps = new List<(int gapTop, int gapBottom, int gapSize)>();
-        for (int i = 1; i < bands.Count; i++)
+        // Merge noise rows (< 3 words) with the previous row
+        var cleanRows = new List<(int bottom, int wordCount)>();
+        foreach (var row in rowBottoms)
         {
-            var gapSize = bands[i].top - bands[i - 1].bottom;
+            if (row.wordCount < 3 && cleanRows.Count > 0)
+            {
+                var prev = cleanRows[^1];
+                cleanRows[^1] = (row.bottom, prev.wordCount + row.wordCount);
+            }
+            else if (row.wordCount >= 3)
+            {
+                cleanRows.Add(row);
+            }
+        }
+
+        if (cleanRows.Count < 2) return new List<MealRow>();
+
+        // Compute gaps between consecutive rows
+        var allGaps = new List<(int gapBottom, int gapSize, int nextRowIdx)>();
+        // We need the tops too - rebuild from sortedWords
+        var rowTops = new List<int>();
+        {
+            int rTop = -1;
+            int rBottom = -1;
+            int rWords = 0;
+            int cleanIdx = 0;
+
+            foreach (var word in sortedWords)
+            {
+                if (rTop < 0 || word.Top > rBottom + avgHeight * 1.5)
+                {
+                    if (rTop >= 0 && cleanIdx < cleanRows.Count && rWords >= 3)
+                    {
+                        rowTops.Add(rTop);
+                        cleanIdx++;
+                    }
+                    else if (rTop >= 0 && rWords < 3 && rowTops.Count > 0)
+                    {
+                        // noise row merged with previous - don't add new top
+                    }
+                    rTop = word.Top;
+                    rBottom = word.Bottom;
+                    rWords = 1;
+                }
+                else
+                {
+                    rBottom = Math.Max(rBottom, word.Bottom);
+                    rWords++;
+                }
+            }
+            if (rWords >= 3) rowTops.Add(rTop);
+        }
+
+        // Ensure we have matching rowTops and cleanRows
+        var numRows = Math.Min(rowTops.Count, cleanRows.Count);
+
+        var gaps = new List<(int gapTop, int gapBottom, int gapSize)>();
+        for (int i = 1; i < numRows; i++)
+        {
+            var gapSize = rowTops[i] - cleanRows[i - 1].bottom;
             if (gapSize > 0)
-                gaps.Add((bands[i - 1].bottom, bands[i].top, gapSize));
+                gaps.Add((cleanRows[i - 1].bottom, rowTops[i], gapSize));
         }
 
         if (gaps.Count == 0) return new List<MealRow>();
 
-        var avgGap = gaps.Average(g => g.gapSize);
-
-        // Strategy 1: If many small gaps + few large gaps, use relative threshold
-        // Strategy 2: If all gaps similar, use absolute threshold (% of image height)
-        var relativeThreshold = avgGap * 1.8;
-        var absoluteThreshold = Math.Max(imageHeight * 0.015, 30);
-
-        var largeGaps = gaps.Where(g => g.gapSize > relativeThreshold)
+        // Take the 4 largest gaps as section boundaries (5 meal sections)
+        var largeGaps = gaps.OrderByDescending(g => g.gapSize)
+            .Take(4)
             .OrderBy(g => g.gapTop)
             .ToList();
 
-        // If relative threshold found too few, try absolute
-        if (largeGaps.Count < 2)
-        {
-            largeGaps = gaps.Where(g => g.gapSize > absoluteThreshold)
-                .OrderBy(g => g.gapTop)
-                .ToList();
-        }
-
-        // If we found too many (> 6), keep only the 4 largest
-        if (largeGaps.Count > 6)
-        {
-            largeGaps = largeGaps.OrderByDescending(g => g.gapSize)
-                .Take(4)
-                .OrderBy(g => g.gapTop)
-                .ToList();
-        }
-
-        _logger.LogInformation("Gap analysis: {Total} gaps, avg={Avg:F0}px, {Large} large gaps (rel>{Rel:F0}, abs>{Abs:F0})",
-            gaps.Count, avgGap, largeGaps.Count, relativeThreshold, absoluteThreshold);
+        // If we have fewer than 4, that's fine - we'll have fewer sections
+        _logger.LogInformation("Gap analysis: {Total} gaps, top4: {Sizes}, found {Large} section boundaries",
+            gaps.Count, string.Join(",", largeGaps.Select(g => g.gapSize)), largeGaps.Count);
 
         // Build meal sections from gaps
         var mealTypes = new[] { TipoComida.Desayuno, TipoComida.Almuerzo, TipoComida.Comida, TipoComida.Merienda, TipoComida.Cena };
