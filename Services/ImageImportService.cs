@@ -463,6 +463,15 @@ public class ImageImportService : IImageImportService
             }
         }
 
+        // Fallback: detect columns by position if text-based detection failed
+        if (columns.Count < 3)
+        {
+            _logger.LogInformation("Text-based detection found {Count} columns, trying position-based", columns.Count);
+            var positionColumns = DetectColumnsByPosition(words);
+            if (positionColumns.Count > columns.Count)
+                columns = positionColumns;
+        }
+
         if (columns.Count == 0) return columns;
 
         columns = columns.OrderBy(c => c.HeaderCenterX).ToList();
@@ -484,6 +493,126 @@ public class ImageImportService : IImageImportService
             string.Join(", ", columns.Select(c => $"{c.Label} [{c.ContentLeft:F0}-{c.ContentRight:F0}]")));
 
         return columns;
+    }
+
+    internal List<DayColumn> DetectColumnsByPosition(List<OcrWord> words)
+    {
+        if (words.Count < 7) return new List<DayColumn>();
+
+        var imageWidth = words.Max(w => w.Right) + 10;
+        var imageHeight = words.Max(w => w.Bottom) + 10;
+
+        // Find words in the header area (top ~8% of image)
+        var headerCutoff = imageHeight * 0.08;
+        var headerWords = words.Where(w => w.CenterY < headerCutoff)
+            .OrderBy(w => w.CenterX)
+            .ToList();
+
+        if (headerWords.Count >= 5)
+        {
+            var columnCenters = headerWords.Select(w => w.CenterX).ToList();
+
+            // Calculate gaps between consecutive header positions
+            var gaps = new List<double>();
+            for (int i = 1; i < columnCenters.Count; i++)
+                gaps.Add(columnCenters[i] - columnCenters[i - 1]);
+
+            if (gaps.Count >= 4)
+            {
+                var avgGap = gaps.Average();
+                var isRegular = gaps.All(g => Math.Abs(g - avgGap) < avgGap * 0.4);
+
+                if (isRegular)
+                {
+                    // Extrapolate to 7 columns if we have at least 5
+                    var allCenters = new List<double>(columnCenters);
+                    while (allCenters.Count < 7)
+                    {
+                        var nextX = allCenters[^1] + avgGap;
+                        if (nextX < imageWidth * 0.98) allCenters.Add(nextX);
+                        else break;
+                    }
+                    allCenters = allCenters.Take(7).ToList();
+
+                    var columns = new List<DayColumn>();
+                    var headerTop = (int)headerWords.Average(w => w.Top);
+
+                    for (int i = 0; i < allCenters.Count; i++)
+                    {
+                        columns.Add(new DayColumn
+                        {
+                            DayOfWeek = DayOfWeekMap[Math.Min(i, DayOfWeekMap.Length - 1)],
+                            Label = $"Día {i + 1}",
+                            HeaderCenterX = allCenters[i],
+                            HeaderTop = headerTop,
+                            HeaderLeft = (int)(allCenters[i] - avgGap / 3),
+                            HeaderRight = (int)(allCenters[i] + avgGap / 3)
+                        });
+                    }
+
+                    _logger.LogInformation("Position-based detection: {Count} columns, avg spacing {Gap:F0}px",
+                        columns.Count, avgGap);
+
+                    return columns;
+                }
+            }
+        }
+
+        // Second fallback: cluster ALL words by X position into columns
+        // Useful when header words aren't detected but content words form clear columns
+        return DetectColumnsByXClustering(words, imageWidth);
+    }
+
+    private List<DayColumn> DetectColumnsByXClustering(List<OcrWord> words, int imageWidth)
+    {
+        // Divide image into N equal buckets and count words per bucket
+        // Try 8 buckets (1 label + 7 days) first, then 7
+        foreach (var totalCols in new[] { 8, 7 })
+        {
+            var colWidth = imageWidth / (double)totalCols;
+            var buckets = new Dictionary<int, int>();
+
+            foreach (var word in words)
+            {
+                var bucket = Math.Min((int)(word.CenterX / colWidth), totalCols - 1);
+                buckets[bucket] = buckets.GetValueOrDefault(bucket, 0) + 1;
+            }
+
+            var avgCount = words.Count / (double)totalCols;
+            var significantBuckets = buckets.Where(b => b.Value > avgCount * 0.3)
+                .OrderBy(b => b.Key)
+                .ToList();
+
+            if (significantBuckets.Count >= 5)
+            {
+                // Skip leftmost bucket if it's far left (label column)
+                var dayBuckets = significantBuckets;
+                if (dayBuckets[0].Key == 0 && totalCols == 8)
+                    dayBuckets = dayBuckets.Skip(1).ToList();
+                dayBuckets = dayBuckets.Take(7).ToList();
+
+                var columns = new List<DayColumn>();
+                for (int i = 0; i < dayBuckets.Count; i++)
+                {
+                    var centerX = (dayBuckets[i].Key + 0.5) * colWidth;
+                    columns.Add(new DayColumn
+                    {
+                        DayOfWeek = DayOfWeekMap[Math.Min(i, DayOfWeekMap.Length - 1)],
+                        Label = $"Día {i + 1}",
+                        HeaderCenterX = centerX,
+                        HeaderTop = 0,
+                        HeaderLeft = (int)(centerX - colWidth / 3),
+                        HeaderRight = (int)(centerX + colWidth / 3)
+                    });
+                }
+
+                _logger.LogInformation("X-clustering detection: {Count} columns from {TotalCols}-bucket split",
+                    columns.Count, totalCols);
+                return columns;
+            }
+        }
+
+        return new List<DayColumn>();
     }
 
     internal List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns)
@@ -536,22 +665,143 @@ public class ImageImportService : IImageImportService
 
         rows = rows.OrderBy(r => r.Top).ToList();
 
-        // Calculate row boundaries
-        var imageHeight = words.Max(w => w.Bottom) + 10;
-        for (int i = 0; i < rows.Count; i++)
+        // Fallback: detect meal rows by Y-position gaps if text-based detection found < 2
+        var usedGapDetection = false;
+        if (rows.Count < 2)
         {
-            rows[i].ContentTop = i == 0
-                ? rows[i].Top - 5
-                : (rows[i - 1].CenterY + rows[i].CenterY) / 2;
+            _logger.LogInformation("Text-based meal detection found {Count} rows, trying gap-based", rows.Count);
+            var gapRows = DetectMealRowsByGaps(words, dayColumns);
+            if (gapRows.Count > rows.Count)
+            {
+                rows = gapRows;
+                usedGapDetection = true;
+            }
+        }
 
-            rows[i].ContentBottom = i == rows.Count - 1
-                ? imageHeight
-                : (rows[i].CenterY + rows[i + 1].CenterY) / 2;
+        // Calculate row boundaries (skip if gap-based detection already set them)
+        if (!usedGapDetection)
+        {
+            var imageHeight = words.Max(w => w.Bottom) + 10;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                rows[i].ContentTop = i == 0
+                    ? rows[i].Top - 5
+                    : (rows[i - 1].CenterY + rows[i].CenterY) / 2;
+
+                rows[i].ContentBottom = i == rows.Count - 1
+                    ? imageHeight
+                    : (rows[i].CenterY + rows[i + 1].CenterY) / 2;
+            }
         }
 
         _logger.LogInformation("Meal rows: {Rows}",
             string.Join(", ", rows.Select(r => $"{r.MealType} [{r.ContentTop:F0}-{r.ContentBottom:F0}]")));
 
+        return rows;
+    }
+
+    internal List<MealRow> DetectMealRowsByGaps(List<OcrWord> words, List<DayColumn> dayColumns)
+    {
+        var headerTop = dayColumns.Count > 0 ? dayColumns.Min(c => c.HeaderTop) : 0;
+        var imageHeight = words.Max(w => w.Bottom) + 10;
+
+        // Get all words below the header, sorted by Y
+        var contentWords = words.Where(w => w.Top > headerTop + 30).OrderBy(w => w.Top).ToList();
+        if (contentWords.Count < 10) return new List<MealRow>();
+
+        // Group words into Y-bands (horizontal lines of text)
+        var bands = new List<(int top, int bottom)>();
+        int bandTop = contentWords[0].Top;
+        int bandBottom = contentWords[0].Bottom;
+
+        foreach (var word in contentWords)
+        {
+            if (word.Top > bandBottom + 20) // new band if gap > 20px
+            {
+                bands.Add((bandTop, bandBottom));
+                bandTop = word.Top;
+            }
+            bandBottom = Math.Max(bandBottom, word.Bottom);
+        }
+        bands.Add((bandTop, bandBottom));
+
+        if (bands.Count < 3) return new List<MealRow>();
+
+        // Find gaps between bands
+        var gaps = new List<(int gapTop, int gapBottom, int gapSize)>();
+        for (int i = 1; i < bands.Count; i++)
+        {
+            var gapSize = bands[i].top - bands[i - 1].bottom;
+            if (gapSize > 0)
+                gaps.Add((bands[i - 1].bottom, bands[i].top, gapSize));
+        }
+
+        if (gaps.Count == 0) return new List<MealRow>();
+
+        var avgGap = gaps.Average(g => g.gapSize);
+
+        // Strategy 1: If many small gaps + few large gaps, use relative threshold
+        // Strategy 2: If all gaps similar, use absolute threshold (% of image height)
+        var relativeThreshold = avgGap * 1.8;
+        var absoluteThreshold = Math.Max(imageHeight * 0.015, 30);
+
+        var largeGaps = gaps.Where(g => g.gapSize > relativeThreshold)
+            .OrderBy(g => g.gapTop)
+            .ToList();
+
+        // If relative threshold found too few, try absolute
+        if (largeGaps.Count < 2)
+        {
+            largeGaps = gaps.Where(g => g.gapSize > absoluteThreshold)
+                .OrderBy(g => g.gapTop)
+                .ToList();
+        }
+
+        // If we found too many (> 6), keep only the 4 largest
+        if (largeGaps.Count > 6)
+        {
+            largeGaps = largeGaps.OrderByDescending(g => g.gapSize)
+                .Take(4)
+                .OrderBy(g => g.gapTop)
+                .ToList();
+        }
+
+        _logger.LogInformation("Gap analysis: {Total} gaps, avg={Avg:F0}px, {Large} large gaps (rel>{Rel:F0}, abs>{Abs:F0})",
+            gaps.Count, avgGap, largeGaps.Count, relativeThreshold, absoluteThreshold);
+
+        // Build meal sections from gaps
+        var mealTypes = new[] { TipoComida.Desayuno, TipoComida.Almuerzo, TipoComida.Comida, TipoComida.Merienda, TipoComida.Cena };
+        var mealLabels = new[] { "Desayuno", "Tentempié 1", "Comida", "Merienda 1", "Cena" };
+
+        var sectionBounds = new List<(double top, double bottom)>();
+        double sectionStart = contentWords[0].Top - 5;
+
+        foreach (var gap in largeGaps)
+        {
+            var gapMid = (gap.gapTop + gap.gapBottom) / 2.0;
+            sectionBounds.Add((sectionStart, gapMid));
+            sectionStart = gapMid;
+        }
+        sectionBounds.Add((sectionStart, imageHeight));
+
+        var rows = new List<MealRow>();
+        for (int i = 0; i < Math.Min(sectionBounds.Count, mealTypes.Length); i++)
+        {
+            var (top, bottom) = sectionBounds[i];
+            rows.Add(new MealRow
+            {
+                MealType = mealTypes[i],
+                Label = mealLabels[Math.Min(i, mealLabels.Length - 1)],
+                Top = (int)top,
+                CenterY = (top + bottom) / 2,
+                LabelLeft = 0,
+                LabelRight = 100,
+                ContentTop = top,
+                ContentBottom = bottom
+            });
+        }
+
+        _logger.LogInformation("Gap-based meal detection: {Count} sections", rows.Count);
         return rows;
     }
 
