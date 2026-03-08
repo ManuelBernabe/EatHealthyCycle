@@ -864,6 +864,113 @@ public class ImageImportTableParsingTests
         return words;
     }
 
+    [Fact]
+    public void DetectMealRowsByGaps_CrossColumnStaggeredY_Still5Sections()
+    {
+        // Simulates the REAL production problem: 7 columns with food words at
+        // slightly different Y offsets per column. When using ALL words, the Y-gaps
+        // between meal sections get filled by cross-column words. Per-column detection
+        // should still find 5 clear sections.
+        var words = new List<OcrWord>();
+
+        int[] colCX = { 243, 543, 843, 1143, 1443, 1743, 2043 };
+        int colW = 250;
+
+        // Headers
+        for (int d = 0; d < 7; d++)
+            words.Add(W("E", colCX[d] - 50, 37, 143, 65, 42));
+
+        var dayColumns = new List<DayColumn>();
+        for (int d = 0; d < 7; d++)
+        {
+            dayColumns.Add(new DayColumn
+            {
+                DayOfWeek = (DayOfWeek)((d + 1) % 7),
+                Label = $"Día {d + 1}",
+                HeaderCenterX = colCX[d],
+                HeaderTop = 37,
+                HeaderLeft = colCX[d] - colW / 2,
+                HeaderRight = colCX[d] + colW / 2,
+                ContentLeft = colCX[d] - colW / 2,
+                ContentRight = colCX[d] + colW / 2
+            });
+        }
+
+        // Food items with STAGGERED Y per column (offset by d*5)
+        // This is what happens in production - columns aren't perfectly aligned
+        // Desayuno: Y ~160-290
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            int yOff = d * 5; // stagger
+            AddFood(words, x, colW, 160 + yOff, "Bebida", "de", "soja:", "300g");
+            AddFood(words, x, colW, 200 + yOff, "proteina:", "40g");
+            AddFood(words, x, colW, 240 + yOff, "Canela:", "3g");
+            AddFood(words, x, colW, 280 + yOff, "Nuez:", "15g");
+        }
+
+        // GAP: ~310-480 (teal bar area)
+
+        // Tentempié: Y ~480-620
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            int yOff = d * 5;
+            AddFood(words, x, colW, 480 + yOff, "Aguacate:", "200g");
+            AddFood(words, x, colW, 520 + yOff, "Huevo:", "195g");
+            AddFood(words, x, colW, 560 + yOff, "Sal:", "0g");
+            AddFood(words, x, colW, 600 + yOff, "Bacon:", "40g");
+        }
+
+        // GAP: ~630-830
+
+        // Comida: Y ~830-1010
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            int yOff = d * 5;
+            AddFood(words, x, colW, 830 + yOff, "Champiñón:", "200g");
+            AddFood(words, x, colW, 870 + yOff, "Pollo:", "160g");
+            AddFood(words, x, colW, 910 + yOff, "Pan:", "30g");
+            AddFood(words, x, colW, 950 + yOff, "Filete:", "160g");
+        }
+
+        // GAP: ~980-1280
+
+        // Merienda: Y ~1280-1420
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            int yOff = d * 5;
+            AddFood(words, x, colW, 1280 + yOff, "proteina:", "40g");
+            AddFood(words, x, colW, 1320 + yOff, "Agua:", "300g");
+            AddFood(words, x, colW, 1360 + yOff, "Almendra:", "8g");
+            AddFood(words, x, colW, 1400 + yOff, "Naranja:", "230g");
+        }
+
+        // GAP: ~1430-1780
+
+        // Cena: Y ~1780-1920
+        for (int d = 0; d < 7; d++)
+        {
+            int x = colCX[d] - colW / 2;
+            int yOff = d * 5;
+            AddFood(words, x, colW, 1780 + yOff, "Pimiento:", "60g");
+            AddFood(words, x, colW, 1820 + yOff, "Sal:", "0g");
+            AddFood(words, x, colW, 1860 + yOff, "Cebolla:", "60g");
+            AddFood(words, x, colW, 1900 + yOff, "Pollo:", "160g");
+        }
+
+        var rows = _service.DetectMealRowsByGaps(words, dayColumns);
+
+        Assert.Equal(5, rows.Count);
+        Assert.Equal(TipoComida.Desayuno, rows[0].MealType);
+        Assert.Equal(TipoComida.Almuerzo, rows[1].MealType);
+        Assert.Equal(TipoComida.Comida, rows[2].MealType);
+        Assert.Equal(TipoComida.Merienda, rows[3].MealType);
+        Assert.Equal(TipoComida.Cena, rows[4].MealType);
+    }
+
     private static void AddFood(List<OcrWord> words, int colX, int colW, int y, params string[] tokens)
     {
         int spacing = colW / Math.Max(tokens.Length, 1);

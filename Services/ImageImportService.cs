@@ -728,7 +728,7 @@ public class ImageImportService : IImageImportService
         var headerTop = dayColumns.Count > 0 ? dayColumns.Min(c => c.HeaderTop) : 0;
         var imageHeight = words.Max(w => w.Bottom) + 10;
 
-        // Skip well past the header area - teal bars with garbled text create false gaps
+        // Skip well past the header area
         var contentStartY = Math.Max(headerTop + 80, (int)(imageHeight * 0.05));
         var contentWords = words.Where(w => w.Top > contentStartY).OrderBy(w => w.Top).ToList();
         if (contentWords.Count < 10) return new List<MealRow>();
@@ -736,116 +736,67 @@ public class ImageImportService : IImageImportService
         _logger.LogInformation("Gap detection: contentStartY={StartY}, {Count} content words (imageHeight={Height})",
             contentStartY, contentWords.Count, imageHeight);
 
-        // Strategy: find the largest Y-gaps between consecutive words (sorted by Y)
-        // This directly finds section boundaries without fragile band-building
-        var avgHeight = contentWords.Average(w => (double)w.Height);
+        // KEY FIX: Use words from a SINGLE column to detect Y-gaps.
+        // Using all words fails because words from 7 columns at the same Y fill the gaps
+        // between meal sections. A single column shows clear gaps between meals.
+        var bestGaps = new List<(int gapTop, int gapBottom, int gapSize)>();
 
-        // Build unique Y-positions (top of each word row)
-        // Group words that are within avgHeight of each other into the same row
-        var sortedWords = contentWords.OrderBy(w => w.Top).ToList();
-        var rowBottoms = new List<(int bottom, int wordCount)>();
-        int currentRowTop = sortedWords[0].Top;
-        int currentRowBottom = sortedWords[0].Bottom;
-        int currentRowWords = 1;
-
-        foreach (var word in sortedWords.Skip(1))
+        if (dayColumns.Count > 0)
         {
-            // Use avgHeight * 1.5 as threshold - words on the same text line are very close
-            // while different food lines are spaced further apart
-            if (word.Top > currentRowBottom + avgHeight * 1.5)
+            // Try each column separately, pick the one that gives the best 4 gaps
+            foreach (var col in dayColumns)
             {
-                rowBottoms.Add((currentRowBottom, currentRowWords));
-                currentRowTop = word.Top;
-                currentRowBottom = word.Bottom;
-                currentRowWords = 1;
-            }
-            else
-            {
-                currentRowBottom = Math.Max(currentRowBottom, word.Bottom);
-                currentRowWords++;
-            }
-        }
-        rowBottoms.Add((currentRowBottom, currentRowWords));
+                var colWords = contentWords
+                    .Where(w => w.CenterX >= col.ContentLeft && w.CenterX <= col.ContentRight)
+                    .OrderBy(w => w.Top)
+                    .ToList();
 
-        // Skip noise rows (< 3 words) at the beginning
-        while (rowBottoms.Count > 0 && rowBottoms[0].wordCount < 3)
-            rowBottoms.RemoveAt(0);
+                if (colWords.Count < 5) continue;
 
-        // Merge noise rows (< 3 words) with the previous row
-        var cleanRows = new List<(int bottom, int wordCount)>();
-        foreach (var row in rowBottoms)
-        {
-            if (row.wordCount < 3 && cleanRows.Count > 0)
-            {
-                var prev = cleanRows[^1];
-                cleanRows[^1] = (row.bottom, prev.wordCount + row.wordCount);
-            }
-            else if (row.wordCount >= 3)
-            {
-                cleanRows.Add(row);
-            }
-        }
+                var colGaps = FindYGaps(colWords);
+                _logger.LogInformation("Column {Col} ({Left}-{Right}): {Words} words, {Gaps} gaps, sizes: [{Sizes}]",
+                    col.Label, col.ContentLeft, col.ContentRight, colWords.Count, colGaps.Count,
+                    string.Join(",", colGaps.OrderByDescending(g => g.gapSize).Take(6).Select(g => g.gapSize)));
 
-        if (cleanRows.Count < 2) return new List<MealRow>();
-
-        // Compute gaps between consecutive rows
-        var allGaps = new List<(int gapBottom, int gapSize, int nextRowIdx)>();
-        // We need the tops too - rebuild from sortedWords
-        var rowTops = new List<int>();
-        {
-            int rTop = -1;
-            int rBottom = -1;
-            int rWords = 0;
-            int cleanIdx = 0;
-
-            foreach (var word in sortedWords)
-            {
-                if (rTop < 0 || word.Top > rBottom + avgHeight * 1.5)
+                if (colGaps.Count >= 4)
                 {
-                    if (rTop >= 0 && cleanIdx < cleanRows.Count && rWords >= 3)
+                    // Pick the column with 4 largest gaps that are most evenly sized
+                    var top4 = colGaps.OrderByDescending(g => g.gapSize).Take(4).ToList();
+                    var bestTop4 = bestGaps.Count > 0
+                        ? bestGaps.OrderByDescending(g => g.gapSize).Take(4).ToList()
+                        : new List<(int gapTop, int gapBottom, int gapSize)>();
+
+                    if (bestGaps.Count == 0 || top4.Min(g => g.gapSize) > (bestTop4.Count > 0 ? bestTop4.Min(g => g.gapSize) : 0))
                     {
-                        rowTops.Add(rTop);
-                        cleanIdx++;
+                        bestGaps = colGaps;
                     }
-                    else if (rTop >= 0 && rWords < 3 && rowTops.Count > 0)
-                    {
-                        // noise row merged with previous - don't add new top
-                    }
-                    rTop = word.Top;
-                    rBottom = word.Bottom;
-                    rWords = 1;
                 }
-                else
+                else if (colGaps.Count > bestGaps.Count)
                 {
-                    rBottom = Math.Max(rBottom, word.Bottom);
-                    rWords++;
+                    bestGaps = colGaps;
                 }
             }
-            if (rWords >= 3) rowTops.Add(rTop);
         }
 
-        // Ensure we have matching rowTops and cleanRows
-        var numRows = Math.Min(rowTops.Count, cleanRows.Count);
-
-        var gaps = new List<(int gapTop, int gapBottom, int gapSize)>();
-        for (int i = 1; i < numRows; i++)
+        // Fallback: if no column gave good results, use all words but with stricter grouping
+        if (bestGaps.Count < 4)
         {
-            var gapSize = rowTops[i] - cleanRows[i - 1].bottom;
-            if (gapSize > 0)
-                gaps.Add((cleanRows[i - 1].bottom, rowTops[i], gapSize));
+            _logger.LogInformation("Per-column gap detection found {Count} gaps, trying all-words fallback", bestGaps.Count);
+            var allGaps = FindYGaps(contentWords);
+            if (allGaps.Count > bestGaps.Count)
+                bestGaps = allGaps;
         }
 
-        if (gaps.Count == 0) return new List<MealRow>();
+        if (bestGaps.Count == 0) return new List<MealRow>();
 
         // Take the 4 largest gaps as section boundaries (5 meal sections)
-        var largeGaps = gaps.OrderByDescending(g => g.gapSize)
+        var largeGaps = bestGaps.OrderByDescending(g => g.gapSize)
             .Take(4)
             .OrderBy(g => g.gapTop)
             .ToList();
 
-        // If we have fewer than 4, that's fine - we'll have fewer sections
         _logger.LogInformation("Gap analysis: {Total} gaps, top4: {Sizes}, found {Large} section boundaries",
-            gaps.Count, string.Join(",", largeGaps.Select(g => g.gapSize)), largeGaps.Count);
+            bestGaps.Count, string.Join(",", largeGaps.Select(g => g.gapSize)), largeGaps.Count);
 
         // Build meal sections from gaps
         var mealTypes = new[] { TipoComida.Desayuno, TipoComida.Almuerzo, TipoComida.Comida, TipoComida.Merienda, TipoComida.Cena };
@@ -881,6 +832,50 @@ public class ImageImportService : IImageImportService
 
         _logger.LogInformation("Gap-based meal detection: {Count} sections", rows.Count);
         return rows;
+    }
+
+    /// <summary>
+    /// Find Y-gaps between word rows in a list of words (sorted by Top).
+    /// Groups words into rows by Y proximity, then finds gaps between rows.
+    /// </summary>
+    private List<(int gapTop, int gapBottom, int gapSize)> FindYGaps(List<OcrWord> sortedByTop)
+    {
+        if (sortedByTop.Count < 2) return new List<(int, int, int)>();
+
+        var avgHeight = sortedByTop.Average(w => (double)w.Height);
+        // Use avgHeight * 0.8 for same-line grouping (tighter than before)
+        var lineThreshold = avgHeight * 0.8;
+
+        // Group words into text lines
+        var lineRows = new List<(int top, int bottom)>();
+        int curTop = sortedByTop[0].Top;
+        int curBottom = sortedByTop[0].Bottom;
+
+        foreach (var word in sortedByTop.Skip(1))
+        {
+            if (word.Top > curBottom + lineThreshold)
+            {
+                lineRows.Add((curTop, curBottom));
+                curTop = word.Top;
+                curBottom = word.Bottom;
+            }
+            else
+            {
+                curBottom = Math.Max(curBottom, word.Bottom);
+            }
+        }
+        lineRows.Add((curTop, curBottom));
+
+        // Compute gaps between consecutive text lines
+        var gaps = new List<(int gapTop, int gapBottom, int gapSize)>();
+        for (int i = 1; i < lineRows.Count; i++)
+        {
+            var gapSize = lineRows[i].top - lineRows[i - 1].bottom;
+            if (gapSize > 0)
+                gaps.Add((lineRows[i - 1].bottom, lineRows[i].top, gapSize));
+        }
+
+        return gaps;
     }
 
     private static List<OcrWord> GetCellWords(List<OcrWord> allWords, DayColumn day, MealRow meal)
