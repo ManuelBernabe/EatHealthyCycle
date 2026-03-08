@@ -8,11 +8,13 @@ RUN dotnet publish -c Release -o /app
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 
-# Install Tesseract OCR for image diet import
+# Install Tesseract OCR + ImageMagick for image diet import
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-spa \
-    && rm -rf /var/lib/apt/lists/*
+    imagemagick \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml 2>/dev/null || true
 
 COPY --from=build /app .
 EXPOSE 8080

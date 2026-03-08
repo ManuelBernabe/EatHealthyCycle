@@ -106,9 +106,54 @@ public class ImageImportService : IImageImportService
         return new List<OcrWord>();
     }
 
+    private async Task<string> PreprocessImageAsync(string imagePath)
+    {
+        var preprocessed = Path.Combine(Path.GetDirectoryName(imagePath)!,
+            $"{Path.GetFileNameWithoutExtension(imagePath)}_pre.png");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "convert",
+            // Grayscale, normalize contrast, sharpen, threshold for clean B&W, resize up for small images
+            Arguments = $"\"{imagePath}\" -colorspace Gray -normalize -sharpen 0x1 -resize \"200%\" \"{preprocessed}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                _logger.LogWarning("ImageMagick not available, using original image");
+                return imagePath;
+            }
+
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("ImageMagick preprocessing failed: {Err}", stderr);
+                return imagePath;
+            }
+
+            _logger.LogInformation("Image preprocessed: {Path}", preprocessed);
+            return preprocessed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ImageMagick not installed, using original image");
+            return imagePath;
+        }
+    }
+
     private async Task<List<OcrWord>> TryTesseractAsync(string imagePath, string lang, string psm)
     {
         var tsvOutput = Path.Combine(Path.GetDirectoryName(imagePath)!, $"{Guid.NewGuid()}");
+        var preprocessedPath = await PreprocessImageAsync(imagePath);
 
         try
         {
@@ -116,7 +161,7 @@ public class ImageImportService : IImageImportService
             var psi = new ProcessStartInfo
             {
                 FileName = "tesseract",
-                Arguments = $"\"{imagePath}\" \"{tsvOutput}\" -l {lang} --psm {psm} --dpi 300 tsv",
+                Arguments = $"\"{preprocessedPath}\" \"{tsvOutput}\" -l {lang} --psm {psm} --dpi 300 tsv",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -174,6 +219,8 @@ public class ImageImportService : IImageImportService
         {
             var tsvFile = tsvOutput + ".tsv";
             if (File.Exists(tsvFile)) File.Delete(tsvFile);
+            if (preprocessedPath != imagePath && File.Exists(preprocessedPath))
+                File.Delete(preprocessedPath);
         }
     }
 
@@ -243,7 +290,7 @@ public class ImageImportService : IImageImportService
         return words;
     }
 
-    private Dieta ParseTableFromWords(List<OcrWord> words, int usuarioId, string nombreDieta, string nombreArchivo)
+    internal Dieta ParseTableFromWords(List<OcrWord> words, int usuarioId, string nombreDieta, string nombreArchivo)
     {
         var dieta = new Dieta
         {
@@ -321,7 +368,7 @@ public class ImageImportService : IImageImportService
         return dieta;
     }
 
-    private List<DayColumn> DetectDayColumns(List<OcrWord> words)
+    internal List<DayColumn> DetectDayColumns(List<OcrWord> words)
     {
         var columns = new List<DayColumn>();
 
@@ -415,7 +462,7 @@ public class ImageImportService : IImageImportService
         return columns;
     }
 
-    private List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns)
+    internal List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns)
     {
         var rows = new List<MealRow>();
         var headerTop = dayColumns.Min(c => c.HeaderTop);
@@ -546,7 +593,7 @@ public class ImageImportService : IImageImportService
         return items;
     }
 
-    private static FoodItem? ParseFoodLine(string line)
+    internal static FoodItem? ParseFoodLine(string line)
     {
         line = StripMealTypeFromLine(line).Trim();
         if (string.IsNullOrWhiteSpace(line) || line.Length < 2) return null;
@@ -761,7 +808,7 @@ public class ImageImportService : IImageImportService
         public int ParNum { get; set; }
     }
 
-    private class DayColumn
+    internal class DayColumn
     {
         public DayOfWeek DayOfWeek { get; set; }
         public string Label { get; set; } = "";
@@ -773,7 +820,7 @@ public class ImageImportService : IImageImportService
         public double ContentRight { get; set; }
     }
 
-    private class MealRow
+    internal class MealRow
     {
         public TipoComida MealType { get; set; }
         public string Label { get; set; } = "";
@@ -785,7 +832,7 @@ public class ImageImportService : IImageImportService
         public double ContentBottom { get; set; }
     }
 
-    private class FoodItem
+    internal class FoodItem
     {
         public string Name { get; set; } = "";
         public string? Quantity { get; set; }
