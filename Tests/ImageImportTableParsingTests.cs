@@ -600,6 +600,55 @@ public class ImageImportTableParsingTests
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // OCR error correction tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void FixOcrErrors_Fixes_G_As_9()
+    {
+        // "40g" misread as "409"
+        Assert.Equal("40g", ImageImportService.FixOcrErrors("409"));
+        Assert.Equal("160g", ImageImportService.FixOcrErrors("1609"));
+        Assert.Equal("300g", ImageImportService.FixOcrErrors("3009"));
+        Assert.Equal("3g", ImageImportService.FixOcrErrors("39"));
+        Assert.Equal("8g", ImageImportService.FixOcrErrors("89"));
+    }
+
+    [Fact]
+    public void FixOcrErrors_Fixes_G_Before_Parens()
+    {
+        Assert.Equal("40g (2 lonchas)", ImageImportService.FixOcrErrors("409 (2 lonchas)"));
+        Assert.Equal("300g (1 taza)", ImageImportService.FixOcrErrors("3009 (1 taza)"));
+    }
+
+    [Fact]
+    public void FixOcrErrors_SplitsMergedWords()
+    {
+        Assert.Contains("FILETE DE", ImageImportService.FixOcrErrors("FILETEDETEMERA"));
+        Assert.Contains("HUEVO DE", ImageImportService.FixOcrErrors("HUEVODEGALINA"));
+        Assert.Contains("PAN INTEGRAL", ImageImportService.FixOcrErrors("PANINTEGRAL"));
+        Assert.Contains("SAL YODADA", ImageImportService.FixOcrErrors("SALYODADA"));
+    }
+
+    [Fact]
+    public void ParseFoodLine_WithOcrErrors_FixesQuantity()
+    {
+        // "Pollo: 1609" should become "Pollo: 160g"
+        var result = ImageImportService.ParseFoodLine("Pollo: 1609");
+        Assert.NotNull(result);
+        Assert.Equal("POLLO", result.Name);
+        Assert.Equal("160g", result.Quantity);
+    }
+
+    [Fact]
+    public void ParseFoodLine_WithOcrErrors_FixesMergedName()
+    {
+        var result = ImageImportService.ParseFoodLine("FILETEDETERNERA: 1609");
+        Assert.NotNull(result);
+        Assert.Contains("FILETE DE", result.Name);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Noise band scenario (garbled teal bar text creating false sections)
     // ═══════════════════════════════════════════════════════════════════════
 

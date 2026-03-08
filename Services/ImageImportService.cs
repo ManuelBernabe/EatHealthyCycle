@@ -93,9 +93,12 @@ public class ImageImportService : IImageImportService
             imagePath, new FileInfo(imagePath).Length);
 
         List<OcrWord>? bestResult = null;
+        double bestScore = 0;
         string bestDesc = "";
 
-        // Try each strategy and pick the one with the most words
+        // Try each strategy and pick the one with best quality score
+        // Score = wordCount * avgConfidence * wordSegmentationBonus
+        // This prefers results with many well-recognized, properly segmented words
         foreach (var strategy in PreprocessStrategies)
         {
             string inputPath;
@@ -110,27 +113,31 @@ public class ImageImportService : IImageImportService
 
             try
             {
-                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11") })
+                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11"), ("spa", "3") })
                 {
                     var words = await TryTesseractAsync(inputPath, lang, psm);
                     var desc = $"strategy='{strategy}' lang={lang} psm={psm}";
 
                     if (words.Count > 0)
                     {
-                        _logger.LogInformation("{Desc}: {Count} words, avg conf={Avg:F0}",
-                            desc, words.Count, words.Average(w => w.Confidence));
+                        var avgConf = words.Average(w => (double)w.Confidence);
+                        var avgLen = words.Average(w => (double)w.Text.Length);
+                        // Penalize very long avg word length (merged words like "FILETEDETEMERA")
+                        // Ideal avg word length is 4-8 chars
+                        var segBonus = avgLen > 12 ? 0.5 : (avgLen > 8 ? 0.8 : 1.0);
+                        // Count distinct Tesseract lines as quality indicator
+                        var distinctLines = words.Select(w => (w.BlockNum, w.ParNum, w.LineNum)).Distinct().Count();
+                        var lineBonus = distinctLines > 20 ? 1.2 : 1.0;
+                        var score = words.Count * (avgConf / 100.0) * segBonus * lineBonus;
 
-                        if (bestResult == null || words.Count > bestResult.Count)
+                        _logger.LogInformation("{Desc}: {Count} words, avgConf={Conf:F0}, avgLen={Len:F1}, lines={Lines}, score={Score:F0}",
+                            desc, words.Count, avgConf, avgLen, distinctLines, score);
+
+                        if (score > bestScore)
                         {
                             bestResult = words;
+                            bestScore = score;
                             bestDesc = desc;
-                        }
-
-                        // If we got a very good result (>100 words), stop trying more strategies
-                        if (words.Count > 100)
-                        {
-                            _logger.LogInformation("Good result with {Desc}, using it", desc);
-                            return words;
                         }
                     }
                 }
@@ -141,14 +148,17 @@ public class ImageImportService : IImageImportService
                     File.Delete(inputPath);
             }
 
-            // If we found a decent result with original/gentle preprocessing, use it
-            if (bestResult != null && bestResult.Count > 30)
+            // If we found a very good result with gentle preprocessing, use it
+            // Require high score (good segmentation + high confidence + many words)
+            if (bestResult != null && bestResult.Count > 200 && bestScore > 150)
             {
-                _logger.LogInformation("Using best result: {Desc} with {Count} words", bestDesc, bestResult.Count);
+                _logger.LogInformation("Using best result: {Desc} with score={Score:F0}", bestDesc, bestScore);
                 return bestResult;
             }
         }
 
+        _logger.LogInformation("Final best result: {Desc} with score={Score:F0}, {Count} words",
+            bestDesc, bestScore, bestResult?.Count ?? 0);
         return bestResult ?? new List<OcrWord>();
     }
 
@@ -898,39 +908,48 @@ public class ImageImportService : IImageImportService
     {
         if (cellWords.Count == 0) return new List<FoodItem>();
 
-        // Group words into lines by Y position
-        var lines = new List<List<OcrWord>>();
-        List<OcrWord>? currentLine = null;
+        // Strategy 1: Group by Tesseract's native line grouping (BlockNum, ParNum, LineNum)
+        // This is more reliable than Y-position heuristics since Tesseract knows
+        // which words belong on the same line
+        var tsvGroups = cellWords
+            .GroupBy(w => (w.BlockNum, w.ParNum, w.LineNum))
+            .OrderBy(g => g.Min(w => w.Top))
+            .ThenBy(g => g.Min(w => w.Left))
+            .ToList();
 
-        foreach (var word in cellWords)
+        List<string> textLines;
+
+        if (tsvGroups.Count >= 2)
         {
-            if (currentLine == null || !currentLine.Any(w => Math.Abs(w.CenterY - word.CenterY) < word.Height * 0.7))
-            {
-                currentLine = new List<OcrWord> { word };
-                lines.Add(currentLine);
-            }
-            else
-            {
-                currentLine.Add(word);
-            }
+            // Tesseract detected multiple lines - use its grouping
+            textLines = BuildTextLines(tsvGroups.Select(g =>
+                string.Join(" ", g.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
         }
-
-        // Build text lines, joining continuation lines
-        var textLines = new List<string>();
-        foreach (var line in lines)
+        else
         {
-            var lineText = string.Join(" ", line.OrderBy(w => w.Left).Select(w => w.Text.Trim()));
-            lineText = CleanLine(lineText);
-            if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
+            // Fallback: Group by Y position (when Tesseract puts everything on one line)
+            // Use first word's CenterY as anchor to prevent chaining
+            var yLines = new List<List<OcrWord>>();
+            foreach (var word in cellWords)
+            {
+                var matched = false;
+                foreach (var line in yLines)
+                {
+                    // Compare against the FIRST word in the line (anchor), not any word
+                    if (Math.Abs(line[0].CenterY - word.CenterY) < word.Height * 0.8)
+                    {
+                        line.Add(word);
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched)
+                    yLines.Add(new List<OcrWord> { word });
+            }
 
-            if (textLines.Count > 0 && EndsWithPreposition(textLines[^1]))
-            {
-                textLines[^1] = textLines[^1] + " " + lineText;
-            }
-            else
-            {
-                textLines.Add(lineText);
-            }
+            textLines = BuildTextLines(yLines
+                .OrderBy(l => l[0].Top)
+                .Select(l => string.Join(" ", l.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
         }
 
         var items = new List<FoodItem>();
@@ -944,8 +963,29 @@ public class ImageImportService : IImageImportService
         return items;
     }
 
+    private static List<string> BuildTextLines(IEnumerable<string> rawLines)
+    {
+        var textLines = new List<string>();
+        foreach (var raw in rawLines)
+        {
+            var lineText = CleanLine(raw);
+            if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
+
+            if (textLines.Count > 0 && EndsWithPreposition(textLines[^1]))
+            {
+                textLines[^1] = textLines[^1] + " " + lineText;
+            }
+            else
+            {
+                textLines.Add(lineText);
+            }
+        }
+        return textLines;
+    }
+
     internal static FoodItem? ParseFoodLine(string line)
     {
+        line = FixOcrErrors(line);
         line = StripMealTypeFromLine(line).Trim();
         if (string.IsNullOrWhiteSpace(line) || line.Length < 2) return null;
 
@@ -1112,6 +1152,35 @@ public class ImageImportService : IImageImportService
         if (words.Length == 0) return false;
         var last = words[^1].ToLowerInvariant();
         return last is "de" or "del" or "con" or "al" or "en" or "a" or "la" or "el" or "los" or "las" or "y" or "e" or "o" or "u";
+    }
+
+    /// <summary>
+    /// Fix common Tesseract OCR errors in food/quantity text.
+    /// </summary>
+    internal static string FixOcrErrors(string text)
+    {
+        // "g" misread as "9": 40g→409, 160g→1609, 300g→3009, 3g→39
+        text = Regex.Replace(text, @"(\d)9\b", "${1}g");
+        // "g" misread as "9" before parenthesis: "409 (2 lonchas)" → "40g (2 lonchas)"
+        text = Regex.Replace(text, @"(\d)9(\s*\()", "${1}g${2}");
+        // Split stuck-together words at camelCase boundaries: "FILETEDETEMERA" → "FILETE DE TEMERA"
+        // Look for lowercase-UPPERCASE or UPPERCASE sequences that should be split
+        // Pattern: word chars where two known Spanish words are joined
+        // Split at transitions between known food prefixes/suffixes
+        text = Regex.Replace(text, @"(?i)(FILETE)(DE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(HUEVO)(DE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(PAN)(INTEGRAL)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(SAL)(YODADA)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(BEBIDA)(DE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(PROTEINA)(DE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(AGUA)(MINERAL)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(CACAO)(EN)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(ACEITE)(DE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(CEBOLLA)(BLANCA)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(PIMIENTO)(ROJO|VERDE)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(ALMENDRA)(SIN)", "$1 $2");
+        text = Regex.Replace(text, @"(?i)(MANCHEGO)(CORTADAS|CURADO)", "$1 $2");
+        return text;
     }
 
     private static string CleanLine(string line)
