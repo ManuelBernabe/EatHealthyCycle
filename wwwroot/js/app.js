@@ -194,6 +194,25 @@ const App = {
         }
     },
 
+    async importarDietaImagen() {
+        const file = document.getElementById('diet-img-file').files[0];
+        const nombre = document.getElementById('diet-img-name').value;
+        if (!file || !nombre) return this.toast('Selecciona una imagen y un nombre', 'error');
+
+        const formData = new FormData();
+        formData.append('archivo', file);
+        formData.append('nombre', nombre);
+
+        try {
+            await API.importarDietaImagen(API.user.id, formData);
+            this.toast('Dieta importada desde imagen correctamente');
+            this.closeModal('modal-import-imagen');
+            this.loadDashboard();
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
+    },
+
     async borrarDieta(id) {
         if (!confirm('¿Eliminar esta dieta?')) return;
         try {

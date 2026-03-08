@@ -82,6 +82,7 @@ const API = {
 
     // Dietas
     importarDieta: (usuarioId, formData) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/importar`, formData, true),
+    importarDietaImagen: (usuarioId, formData) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/importar-imagen`, formData, true),
     listarDietas: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/dietas`),
     obtenerDieta: (id) => API.request('GET', `/api/dietas/${id}`),
     eliminarDieta: (id) => API.request('DELETE', `/api/dietas/${id}`),

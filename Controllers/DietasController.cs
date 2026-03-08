@@ -14,11 +14,13 @@ public class DietasController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IPdfImportService _pdfImport;
+    private readonly IImageImportService _imageImport;
 
-    public DietasController(AppDbContext db, IPdfImportService pdfImport)
+    public DietasController(AppDbContext db, IPdfImportService pdfImport, IImageImportService imageImport)
     {
         _db = db;
         _pdfImport = pdfImport;
+        _imageImport = imageImport;
     }
 
     [HttpPost("usuarios/{usuarioId}/dietas/importar")]
@@ -93,6 +95,26 @@ public class DietasController : ControllerBase
         await _db.SaveChangesAsync();
 
         return NoContent();
+    }
+
+    [HttpPost("usuarios/{usuarioId}/dietas/importar-imagen")]
+    public async Task<ActionResult<DietaResumenDto>> ImportarImagen(int usuarioId, IFormFile archivo, [FromForm] string nombre)
+    {
+        if (archivo == null || archivo.Length == 0)
+            return BadRequest("Debe subir una imagen");
+
+        var allowedTypes = new[] { "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp" };
+        if (!allowedTypes.Any(t => archivo.ContentType.Contains(t.Split('/')[1], StringComparison.OrdinalIgnoreCase)))
+            return BadRequest("El archivo debe ser una imagen (PNG, JPG, GIF, WEBP, BMP)");
+
+        var usuario = await _db.Usuarios.FindAsync(usuarioId);
+        if (usuario == null) return NotFound("Usuario no encontrado");
+
+        using var stream = archivo.OpenReadStream();
+        var dieta = await _imageImport.ImportarDietaDesdeImagenAsync(usuarioId, nombre, stream, archivo.ContentType, archivo.FileName);
+
+        return CreatedAtAction(nameof(ObtenerDetalle), new { id = dieta.Id },
+            new DietaResumenDto(dieta.Id, dieta.Nombre, dieta.Descripcion, dieta.FechaImportacion, dieta.ArchivoOriginal));
     }
 
     [HttpDelete("dietas/{id}")]

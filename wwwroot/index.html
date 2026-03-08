@@ -107,6 +107,7 @@
             <div class="card-title">Mis Dietas</div>
             <div style="display:flex;gap:6px;">
                 <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">+ PDF</button>
+                <button class="btn btn-sm" style="background:#2196F3;color:white;" onclick="App.openModal('modal-import-imagen')">+ Imagen</button>
                 <button class="btn btn-accent btn-sm" onclick="App.openModal('modal-plan-manual')">+ Plan Manual</button>
             </div>
         </div>
@@ -255,6 +256,23 @@
             <input type="file" id="diet-file" accept=".pdf">
         </div>
         <button class="btn btn-primary" onclick="App.importarDieta()">Importar</button>
+    </div>
+</div>
+
+<!-- Import Image Modal -->
+<div id="modal-import-imagen" class="modal-overlay" onclick="if(event.target===this)App.closeModal('modal-import-imagen')">
+    <div class="modal">
+        <div class="modal-handle"></div>
+        <h3>Importar Dieta (Imagen)</h3>
+        <div class="form-group">
+            <label>Nombre de la dieta</label>
+            <input type="text" id="diet-img-name" placeholder="Ej: Dieta Marzo 2026">
+        </div>
+        <div class="form-group">
+            <label>Imagen de la dieta</label>
+            <input type="file" id="diet-img-file" accept="image/*">
+        </div>
+        <button class="btn btn-primary" onclick="App.importarDietaImagen()">Importar</button>
     </div>
 </div>
 
