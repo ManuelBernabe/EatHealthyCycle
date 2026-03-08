@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EatHealthyCycle.Data;
@@ -8,6 +9,7 @@ namespace EatHealthyCycle.Controllers;
 
 [ApiController]
 [Route("api")]
+[Authorize]
 public class DietasController : ControllerBase
 {
     private readonly AppDbContext _db;

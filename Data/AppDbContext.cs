@@ -20,6 +20,38 @@ public class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // --- Usuario (Auth) ---
+        modelBuilder.Entity<Usuario>(e =>
+        {
+            e.HasKey(u => u.Id);
+            e.Property(u => u.Username).IsRequired().HasMaxLength(100);
+            e.HasIndex(u => u.Username).IsUnique();
+            e.Property(u => u.Email).IsRequired().HasMaxLength(200);
+            e.HasIndex(u => u.Email).IsUnique();
+            e.Property(u => u.PasswordHash).IsRequired();
+            e.Property(u => u.Role).HasConversion<int>();
+            e.Property(u => u.RefreshToken).HasMaxLength(256);
+            e.Property(u => u.IsActive).HasDefaultValue(true);
+            e.Property(u => u.ActivationToken).HasMaxLength(128);
+            e.Property(u => u.TwoFactorEnabled).HasDefaultValue(false);
+            e.Property(u => u.TwoFactorSecret).HasMaxLength(128);
+            e.Property(u => u.RecoveryCodes).HasMaxLength(1024);
+
+            // Seed SuperUserMaster admin
+            e.HasData(new Usuario
+            {
+                Id = 1,
+                Username = "admin",
+                Nombre = "Admin",
+                Email = "admin@eathealthycycle.local",
+                PasswordHash = "$2a$11$r1zN2HmMy2FnebH4onffcOzWj8IsqmrB0Yxe5k1VgbPzXOh29WGDm", // Admin123!
+                Role = UserRole.SuperUserMaster,
+                IsActive = true,
+                FechaCreacion = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+            });
+        });
+
+        // --- Dieta ---
         modelBuilder.Entity<RegistroPeso>()
             .Property(r => r.Peso)
             .HasPrecision(5, 2);

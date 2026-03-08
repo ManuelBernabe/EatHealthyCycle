@@ -17,9 +17,20 @@ namespace EatHealthyCycle.Migrations
                 {
                     Id = table.Column<int>(type: "INTEGER", nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
+                    Username = table.Column<string>(type: "TEXT", maxLength: 100, nullable: false),
                     Nombre = table.Column<string>(type: "TEXT", nullable: false),
-                    Email = table.Column<string>(type: "TEXT", nullable: false),
-                    FechaCreacion = table.Column<DateTime>(type: "TEXT", nullable: false)
+                    Email = table.Column<string>(type: "TEXT", maxLength: 200, nullable: false),
+                    PasswordHash = table.Column<string>(type: "TEXT", nullable: false),
+                    Role = table.Column<int>(type: "INTEGER", nullable: false),
+                    FechaCreacion = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    IsActive = table.Column<bool>(type: "INTEGER", nullable: false, defaultValue: true),
+                    RefreshToken = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
+                    RefreshTokenExpiresAt = table.Column<DateTime>(type: "TEXT", nullable: true),
+                    ActivationToken = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
+                    ActivationTokenExpiresAt = table.Column<DateTime>(type: "TEXT", nullable: true),
+                    TwoFactorEnabled = table.Column<bool>(type: "INTEGER", nullable: false, defaultValue: false),
+                    TwoFactorSecret = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
+                    RecoveryCodes = table.Column<string>(type: "TEXT", maxLength: 1024, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -238,6 +249,11 @@ namespace EatHealthyCycle.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
+            migrationBuilder.InsertData(
+                table: "Usuarios",
+                columns: new[] { "Id", "ActivationToken", "ActivationTokenExpiresAt", "Email", "FechaCreacion", "IsActive", "Nombre", "PasswordHash", "RecoveryCodes", "RefreshToken", "RefreshTokenExpiresAt", "Role", "TwoFactorSecret", "Username" },
+                values: new object[] { 1, null, null, "admin@eathealthycycle.local", new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Admin", "$2a$11$r1zN2HmMy2FnebH4onffcOzWj8IsqmrB0Yxe5k1VgbPzXOh29WGDm", null, null, null, 3, null, "admin" });
+
             migrationBuilder.CreateIndex(
                 name: "IX_Alimentos_ComidaId",
                 table: "Alimentos",
@@ -292,6 +308,18 @@ namespace EatHealthyCycle.Migrations
                 name: "IX_RegistrosPeso_UsuarioId_Fecha",
                 table: "RegistrosPeso",
                 columns: new[] { "UsuarioId", "Fecha" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Usuarios_Email",
+                table: "Usuarios",
+                column: "Email",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Usuarios_Username",
+                table: "Usuarios",
+                column: "Username",
                 unique: true);
         }
 
