@@ -229,12 +229,15 @@ const App = {
     },
 
     // --- PLAN SEMANAL ---
+    selectedPlanIndex: 0,
+
     async loadPlan() {
         const uid = API.user?.id;
         if (!uid) return;
         try {
             const planes = await API.listarPlanes(uid);
             if (planes.length === 0) {
+                this.currentPlan = null;
                 document.getElementById('plan-content').innerHTML = `
                     <div class="empty-state">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -244,10 +247,31 @@ const App = {
                 return;
             }
 
-            const plan = await API.obtenerPlan(planes[0].id);
+            if (this.selectedPlanIndex >= planes.length) this.selectedPlanIndex = 0;
+            const selectedPlan = planes[this.selectedPlanIndex];
+            const plan = await API.obtenerPlan(selectedPlan.id);
             this.currentPlan = plan;
+            this.allPlanes = planes;
             this.renderPlan(plan);
         } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async borrarPlan(id) {
+        if (!confirm('¿Eliminar este plan semanal?')) return;
+        try {
+            await API.eliminarPlan(id);
+            this.selectedPlanIndex = 0;
+            this.currentDayIndex = 0;
+            this.toast('Plan eliminado');
+            this.loadPlan();
+            this.loadDashboard();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    selectPlan(index) {
+        this.selectedPlanIndex = index;
+        this.currentDayIndex = 0;
+        this.loadPlan();
     },
 
     renderPlan(plan) {
@@ -299,7 +323,26 @@ const App = {
             `;
         }).join('');
 
+        // Plan selector
+        const planes = this.allPlanes || [];
+        let planSelectorHtml = '';
+        if (planes.length > 1) {
+            planSelectorHtml = `<div style="padding:8px 16px;display:flex;align-items:center;gap:8px;">
+                <select onchange="App.selectPlan(+this.value)" style="flex:1;padding:6px 8px;border-radius:8px;border:1px solid #ddd;">
+                    ${planes.map((p, i) => `<option value="${i}" ${i === this.selectedPlanIndex ? 'selected' : ''}>
+                        ${new Date(p.fechaInicio).toLocaleDateString('es')} - ${new Date(p.fechaFin).toLocaleDateString('es')}
+                    </option>`).join('')}
+                </select>
+                <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar</button>
+            </div>`;
+        } else {
+            planSelectorHtml = `<div style="padding:8px 16px;display:flex;justify-content:flex-end;">
+                <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar plan</button>
+            </div>`;
+        }
+
         document.getElementById('plan-content').innerHTML = `
+            ${planSelectorHtml}
             <div class="day-tabs">${tabsHtml}</div>
             ${mealsHtml}
             <div style="padding:12px 16px;">

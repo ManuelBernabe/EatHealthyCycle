@@ -466,18 +466,16 @@ public class PdfImportService : IPdfImportService
         }
         lineGroups.Add(currentLine);
 
-        // Process each line: detect if it starts with a bullet, clean the text
-        var foodItems = new List<string>();
-        var currentItemParts = new List<string>();
+        // Build clean lines with bullet info
+        var cleanLines = new List<(string text, bool hasBullet)>();
+        bool anyBullets = false;
 
         foreach (var lineWords in lineGroups)
         {
             var orderedWords = lineWords.OrderBy(w => w.BoundingBox.Left).ToList();
-
-            // Check if this line starts with a bullet character
             bool startsWithBullet = IsBulletWord(orderedWords[0]);
+            if (startsWithBullet) anyBullets = true;
 
-            // Build clean text from non-bullet words
             var cleanedParts = orderedWords
                 .Where(w => !IsBulletWord(w))
                 .Select(w => CleanText(w.Text))
@@ -487,24 +485,41 @@ public class PdfImportService : IPdfImportService
             if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
             if (IsNoiseLine(lineText) || IsMealTypeHeader(lineText)) continue;
 
-            if (startsWithBullet && currentItemParts.Count > 0)
+            cleanLines.Add((lineText, startsWithBullet));
+        }
+
+        var foodItems = new List<string>();
+
+        if (anyBullets)
+        {
+            // Bullet-aware merging: bullet = new item, no bullet = continuation
+            var currentItemParts = new List<string>();
+            foreach (var (lineText, hasBullet) in cleanLines)
             {
-                // Save the previous food item
+                if (hasBullet && currentItemParts.Count > 0)
+                {
+                    var itemText = string.Join(" ", currentItemParts);
+                    if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                        foodItems.Add(itemText);
+                    currentItemParts.Clear();
+                }
+                currentItemParts.Add(lineText);
+            }
+            if (currentItemParts.Count > 0)
+            {
                 var itemText = string.Join(" ", currentItemParts);
                 if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
                     foodItems.Add(itemText);
-                currentItemParts.Clear();
             }
-
-            currentItemParts.Add(lineText);
         }
-
-        // Don't forget the last item
-        if (currentItemParts.Count > 0)
+        else
         {
-            var itemText = string.Join(" ", currentItemParts);
-            if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
-                foodItems.Add(itemText);
+            // No bullets detected: each line is a separate food item
+            foreach (var (lineText, _) in cleanLines)
+            {
+                if (!IsNoiseLine(lineText) && !IsMealTypeHeader(lineText))
+                    foodItems.Add(lineText);
+            }
         }
 
         return foodItems;

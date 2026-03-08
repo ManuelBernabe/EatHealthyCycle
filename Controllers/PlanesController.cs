@@ -191,7 +191,11 @@ public class PlanesController : ControllerBase
     [HttpDelete("planes/{id}")]
     public async Task<IActionResult> Eliminar(int id)
     {
-        var plan = await _db.PlanesSemanal.FindAsync(id);
+        var plan = await _db.PlanesSemanal
+            .Include(p => p.Dias)
+                .ThenInclude(d => d.Comidas)
+            .Include(p => p.ItemsListaCompra)
+            .FirstOrDefaultAsync(p => p.Id == id);
         if (plan == null) return NotFound();
 
         _db.PlanesSemanal.Remove(plan);

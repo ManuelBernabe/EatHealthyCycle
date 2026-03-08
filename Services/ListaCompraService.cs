@@ -45,10 +45,17 @@ public class ListaCompraService : IListaCompraService
             var alimentosDb = await _db.Alimentos
                 .Where(a => comidaIds.Contains(a.ComidaId))
                 .ToListAsync();
-            alimentos.AddRange(alimentosDb.Select(a => (NormalizeName(a.Nombre), a.Cantidad)));
+            foreach (var a in alimentosDb)
+            {
+                var name = NormalizeName(a.Nombre);
+                // Safety: if name is suspiciously long, it may be concatenated foods
+                if (name.Length > 50 && a.Cantidad == null)
+                    continue; // Skip garbage entries from bad PDF imports
+                alimentos.Add((name, a.Cantidad));
+            }
         }
 
-        // Strategy 2: Parse from PlanComida descriptions if no direct link
+        // Strategy 2: Parse from PlanComida descriptions (comma-separated "Name (Qty)")
         if (alimentos.Count == 0)
         {
             foreach (var dia in plan.Dias)
