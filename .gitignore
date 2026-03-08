@@ -1,0 +1,19 @@
+# Build results
+bin/
+obj/
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# SQLite database
+*.db
+*.db-journal
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
