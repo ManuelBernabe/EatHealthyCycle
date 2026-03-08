@@ -12,11 +12,26 @@ public class ListaCompraService : IListaCompraService
 {
     private readonly AppDbContext _db;
 
-    // Meal type words to strip from food names
+    // Meal type words that should never appear in food names
     private static readonly HashSet<string> MealTypeWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "DESAYUNO", "ALMUERZO", "COMIDA", "MERIENDA", "CENA",
         "PRE", "PREDESAYUNO", "MEDIA", "MAÑANA", "MEDIAMANANA"
+    };
+
+    // Prepositions that indicate the food name continues on the next comma-separated part
+    private static readonly HashSet<string> Prepositions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DE", "DEL", "CON", "AL", "EN", "A", "LA", "LAS", "LOS"
+    };
+
+    // Words that are NOT standalone food items (adjectives/modifiers from fragmented names)
+    private static readonly HashSet<string> NotStandaloneFood = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "HERVIDO", "COCIDO", "FRESCO", "INTEGRAL", "NATURAL", "PASTEURIZADA",
+        "PELADA", "PELADO", "DESGRASADO", "TOSTADO", "RALLADO",
+        "REBANADAS", "UNIDADES", "LATAS", "RODAJAS", "CUCHARADAS",
+        "AÑADIR", "GUSTO"
     };
 
     // Noise patterns - not real food items
@@ -25,7 +40,8 @@ public class ListaCompraService : IListaCompraService
         "masteron", "telmisartan", "ursobilane", "testo cipionato",
         "omega 3", "suplementaci", "actividad f", "día off",
         "dia off", "no entreno", "igual a los", "nac desayuno",
-        "lunes jueves", "1ml de dormir", "capsula"
+        "lunes jueves", "1ml de dormir", "capsula", "1ml jueves",
+        "lunes 1ml", "de dormir", "cipionato", "enantate"
     };
 
     public ListaCompraService(AppDbContext db)
@@ -47,63 +63,22 @@ public class ListaCompraService : IListaCompraService
         if (autoItems.Any())
             _db.ItemsListaCompra.RemoveRange(autoItems);
 
-        // Strategy 1: Get foods from original diet via ComidaId -> Alimentos table
-        var comidaIds = plan.Dias
-            .SelectMany(d => d.Comidas)
-            .Where(c => c.ComidaId.HasValue)
-            .Select(c => c.ComidaId!.Value)
-            .Distinct()
-            .ToList();
-
+        // Always parse from Descripcion (comma-separated format built by PlanSemanalService)
         var alimentos = new List<(string Nombre, string? Cantidad)>();
 
-        if (comidaIds.Count > 0)
+        foreach (var dia in plan.Dias)
         {
-            var alimentosDb = await _db.Alimentos
-                .Where(a => comidaIds.Contains(a.ComidaId))
-                .ToListAsync();
-            foreach (var a in alimentosDb)
+            foreach (var comida in dia.Comidas)
             {
-                var name = CleanFoodName(a.Nombre);
-                if (IsGarbageItem(name)) continue;
-                alimentos.Add((name, a.Cantidad));
+                if (string.IsNullOrWhiteSpace(comida.Descripcion) ||
+                    comida.Descripcion == "(Sin asignar)") continue;
+
+                var items = ParseDescripcion(comida.Descripcion);
+                alimentos.AddRange(items);
             }
         }
 
-        // Strategy 2: Parse from PlanComida descriptions (comma-separated "Name (Qty)")
-        if (alimentos.Count == 0)
-        {
-            foreach (var dia in plan.Dias)
-            {
-                foreach (var comida in dia.Comidas)
-                {
-                    if (string.IsNullOrWhiteSpace(comida.Descripcion) ||
-                        comida.Descripcion == "(Sin asignar)") continue;
-
-                    var items = comida.Descripcion.Split(',', StringSplitOptions.TrimEntries);
-                    foreach (var item in items)
-                    {
-                        var match = Regex.Match(item.Trim(), @"^(.+?)\s*\((.+?)\)\s*$");
-                        string name;
-                        string? qty;
-                        if (match.Success)
-                        {
-                            name = CleanFoodName(match.Groups[1].Value);
-                            qty = match.Groups[2].Value.Trim();
-                        }
-                        else
-                        {
-                            name = CleanFoodName(item);
-                            qty = null;
-                        }
-                        if (IsGarbageItem(name)) continue;
-                        alimentos.Add((name, qty));
-                    }
-                }
-            }
-        }
-
-        // Group by normalized key (accent-insensitive, meal-type-stripped), aggregate quantities
+        // Group by normalized key (accent-insensitive, cleaned), aggregate quantities
         var agrupados = alimentos
             .Where(a => !string.IsNullOrWhiteSpace(a.Nombre) && a.Nombre.Length >= 2)
             .GroupBy(a => NormalizeKey(a.Nombre))
@@ -130,7 +105,6 @@ public class ListaCompraService : IListaCompraService
         _db.ItemsListaCompra.AddRange(agrupados);
         await _db.SaveChangesAsync();
 
-        // Return all items including manual ones
         return await _db.ItemsListaCompra
             .Where(i => i.PlanSemanalId == planSemanalId)
             .OrderBy(i => i.Categoria)
@@ -139,7 +113,96 @@ public class ListaCompraService : IListaCompraService
     }
 
     /// <summary>
-    /// Clean a food name: whitelist chars, strip trailing meal type words.
+    /// Parse a Descripcion string into individual food items.
+    /// Format: "Food1 (Qty1), Food2 (Qty2), Food3"
+    /// Handles fragments by joining items split across commas.
+    /// </summary>
+    private static List<(string Nombre, string? Cantidad)> ParseDescripcion(string descripcion)
+    {
+        var result = new List<(string, string?)>();
+
+        // Split by comma
+        var parts = descripcion.Split(',', StringSplitOptions.TrimEntries)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+
+        // Join fragments: items ending with prepositions or followed by non-food words
+        var joined = JoinFragments(parts);
+
+        foreach (var item in joined)
+        {
+            var cleaned = CleanFoodName(item);
+            if (IsGarbageItem(cleaned)) continue;
+
+            var (nombre, cantidad) = ExtractQuantity(cleaned);
+            nombre = nombre.Trim();
+            if (!string.IsNullOrWhiteSpace(nombre) && nombre.Length >= 2 && !IsGarbageItem(nombre))
+                result.Add((nombre, cantidad));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Join comma-separated fragments that belong together.
+    /// "PECHUGA DE, POLLO (200G)" → "PECHUGA DE POLLO (200G)"
+    /// "ARROZ INTEGRAL, HERVIDO (200G)" → "ARROZ INTEGRAL HERVIDO (200G)"
+    /// </summary>
+    private static List<string> JoinFragments(List<string> parts)
+    {
+        if (parts.Count <= 1) return parts;
+
+        var result = new List<string>();
+        int i = 0;
+
+        while (i < parts.Count)
+        {
+            var current = parts[i].Trim();
+            i++;
+
+            // Keep joining with next part if current ends with preposition
+            // or next part starts with a non-standalone word
+            while (i < parts.Count)
+            {
+                var next = parts[i].Trim();
+                var nextFirstWord = next.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault()?.ToUpperInvariant() ?? "";
+
+                bool shouldJoin = false;
+
+                // Current ends with preposition: "PECHUGA DE" + "POLLO"
+                var lastWord = current.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .LastOrDefault()?.ToUpperInvariant() ?? "";
+                if (Prepositions.Contains(lastWord))
+                    shouldJoin = true;
+
+                // Next starts with a modifier/adjective, not a food: "INTEGRAL" + "2 REBANADAS"
+                if (!shouldJoin && NotStandaloneFood.Contains(nextFirstWord))
+                    shouldJoin = true;
+
+                // Next is just a number + unit (quantity that belongs to current)
+                if (!shouldJoin && Regex.IsMatch(next.Trim(), @"^\d+\s*(g|gr|mg|kg|ml|l|cl)\b", RegexOptions.IgnoreCase))
+                    shouldJoin = true;
+
+                if (shouldJoin)
+                {
+                    current += " " + next;
+                    i++;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            result.Add(current);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Clean a food name: whitelist chars, strip meal type words, strip noise.
     /// </summary>
     private static string CleanFoodName(string name)
     {
@@ -148,86 +211,140 @@ public class ListaCompraService : IListaCompraService
         foreach (var c in name)
         {
             if (char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '–' ||
-                c == '(' || c == ')' || c == '.' || c == ',' || c == '/')
+                c == '(' || c == ')' || c == '.' || c == '/' || c == ',')
                 sb.Append(c);
         }
         name = Regex.Replace(sb.ToString().Trim(), @"\s{2,}", " ");
-        name = name.Trim('-', '–', '—', ' ', '*');
+        name = name.Trim('-', '–', '—', ' ', '*', ',');
 
-        // Step 2: strip trailing meal type words (e.g., "TERNERA CENA" -> "TERNERA")
-        name = StripMealTypeSuffix(name);
+        // Step 2: strip meal type words from anywhere in the name
+        name = StripMealTypeWords(name);
 
-        return name;
+        // Step 3: strip "AÑADIR AL GUSTO" and similar
+        name = Regex.Replace(name, @"\s*a[ñn]adir\s+al\s+gusto\s*", " ", RegexOptions.IgnoreCase).Trim();
+
+        return name.Trim();
     }
 
     /// <summary>
-    /// Remove trailing meal type words from a food name.
-    /// "PECHUGA DE PAVO FRESCO CENA" -> "PECHUGA DE PAVO FRESCO"
-    /// "TERNERA COMIDA" -> "TERNERA"
+    /// Remove meal type words from anywhere in the food name.
+    /// "PROTEINA DESAYUNO WHEY" → "PROTEINA WHEY"
+    /// "SAL YODADA COMIDA" → "SAL YODADA"
     /// </summary>
-    private static string StripMealTypeSuffix(string name)
+    private static string StripMealTypeWords(string name)
     {
         var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length < 2) return name;
-
-        // Strip from end while the last word is a meal type
-        int end = words.Length;
-        while (end > 1 && MealTypeWords.Contains(words[end - 1]))
-            end--;
-
-        if (end == words.Length) return name;
-        return string.Join(" ", words.Take(end)).Trim();
+        var filtered = words.Where(w => !MealTypeWords.Contains(w)).ToArray();
+        return string.Join(" ", filtered).Trim();
     }
 
     /// <summary>
-    /// Check if a food name is garbage (noise, medication, concatenated meals, etc.)
+    /// Extract quantity from a food item string.
+    /// "HARINA DE AVENA (100G)" → ("HARINA DE AVENA", "100G")
+    /// "PECHUGA DE POLLO 200G" → ("PECHUGA DE POLLO", "200G")
+    /// "2 REBANADAS (60G)" → ("PAN DE MOLDE INTEGRAL", "2 REBANADAS (60G)")
+    /// </summary>
+    private static (string nombre, string? cantidad) ExtractQuantity(string text)
+    {
+        text = text.Trim();
+
+        // Pattern 1: "Name (Qty)" — quantity in parentheses at end
+        var m1 = Regex.Match(text, @"^(.+?)\s*\((\d+\s*[a-zA-Z]*)\)\s*$");
+        if (m1.Success)
+            return (m1.Groups[1].Value.Trim(), m1.Groups[2].Value.Trim());
+
+        // Pattern 2: "Name QtyUnit" — quantity at end without parens
+        var m2 = Regex.Match(text,
+            @"^(.+?)\s+(\d+\s*(?:G|GR|MG|KG|ML|L|CL|UNIDADES?|REBANADAS?|LATAS?))\s*$",
+            RegexOptions.IgnoreCase);
+        if (m2.Success)
+            return (m2.Groups[1].Value.Trim(), m2.Groups[2].Value.Trim());
+
+        // Pattern 3: "Qty Name" — quantity prefix like "2 REBANADAS"
+        var m3 = Regex.Match(text,
+            @"^(\d+\s*(?:UNIDADES?|REBANADAS?|CUCHARADAS?|LATAS?|RODAJAS?))\s+(?:DE\s+)?(.+)$",
+            RegexOptions.IgnoreCase);
+        if (m3.Success)
+            return (m3.Groups[2].Value.Trim(), m3.Groups[1].Value.Trim());
+
+        // Pattern 4: embedded "QtyUnit" in middle — extract first quantity found
+        var m4 = Regex.Match(text,
+            @"^(.+?)\s+(\d+\s*(?:G|GR|MG|KG|ML|L|CL))\b",
+            RegexOptions.IgnoreCase);
+        if (m4.Success)
+        {
+            var nombre = m4.Groups[1].Value.Trim();
+            var cantidad = m4.Groups[2].Value.Trim();
+            // Don't include text after the quantity (it's likely a different food from a blob)
+            return (nombre, cantidad);
+        }
+
+        return (text, null);
+    }
+
+    /// <summary>
+    /// Check if a food name is garbage (noise, medication, fragments, etc.)
     /// </summary>
     private static bool IsGarbageItem(string name)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length < 2) return true;
 
         // Too long = likely concatenated multiple foods
-        if (name.Length > 45) return true;
+        if (name.Length > 50) return true;
 
         var lower = name.ToLowerInvariant();
 
-        // Contains noise patterns
+        // Noise patterns
         foreach (var noise in NoisePatterns)
         {
             if (lower.Contains(noise)) return true;
         }
 
-        // Contains multiple food keywords = likely concatenated
+        // Contains multiple distinct food keywords = likely concatenated
         var foodKeywords = new[] { "pollo", "ternera", "pavo", "arroz", "patata", "boniato",
-            "aguacate", "aove", "sal yodada", "champiñon", "pechuga" };
+            "aguacate", "aove", "sal yodada", "champiñon", "pechuga", "atun", "atún",
+            "pan de molde", "huevo", "tortilla" };
         int hits = foodKeywords.Count(k => lower.Contains(k));
-        if (hits >= 3) return true;
+        if (hits >= 2) return true;
 
-        // Starts with quantity (e.g., "50g Proteína whey") — extract the food part
-        // This is handled in ParseAlimento instead
+        // Starts with "-" (medication/supplement prefix from PDF)
+        if (name.StartsWith("-")) return true;
 
-        // Pure number or very short
-        if (Regex.IsMatch(name, @"^\d+\s*[a-zA-Z]*$") && name.Length < 5) return true;
+        // Just a number or very short meaningless text
+        if (Regex.IsMatch(name, @"^\d+\s*[a-zA-Z]{0,2}$")) return true;
+
+        // Common fragments that aren't real food items
+        var firstWord = name.Split(' ').First().ToUpperInvariant();
+        if (NotStandaloneFood.Contains(name.ToUpperInvariant()) ||
+            (name.Split(' ').Length == 1 && NotStandaloneFood.Contains(firstWord)))
+            return true;
+
+        // "50g Proteína whey" - starts with quantity (will be handled by the item it was joined from)
+        if (Regex.IsMatch(name, @"^\d+\s*(g|ml|mg)\s", RegexOptions.IgnoreCase))
+            return true;
 
         return false;
     }
 
     /// <summary>
-    /// Create a grouping key: lowercase, accents stripped for consistent grouping.
-    /// "JAMÓN SERRANO" and "JAMON SERRANO" become the same key.
+    /// Create a grouping key: lowercase, accents stripped, meal types removed, quantities removed.
     /// </summary>
     private static string NormalizeKey(string name)
     {
-        name = StripMealTypeSuffix(name);
+        name = StripMealTypeWords(name);
         name = StripAccents(name);
-        // Remove embedded quantities for grouping (e.g., "NUEZ 20G" -> "NUEZ")
+        // Remove quantities for grouping
         name = Regex.Replace(name, @"\s+\d+\s*(g|gr|mg|kg|ml|l|cl|ud|unidades?|rebanadas?)\b.*$",
             "", RegexOptions.IgnoreCase);
+        // Remove parenthesized content
+        name = Regex.Replace(name, @"\s*\([^)]*\)", "");
+        // Remove "1 CUCHARA..." type suffixes
+        name = Regex.Replace(name, @"\s+\d+\s+cuchara.*$", "", RegexOptions.IgnoreCase);
         return name.ToLowerInvariant().Trim();
     }
 
     /// <summary>
-    /// Strip accents/diacritics: "JAMÓN" -> "JAMON", "CAFÉ" -> "CAFE"
+    /// Strip accents/diacritics: "JAMÓN" → "JAMON"
     /// </summary>
     private static string StripAccents(string text)
     {
@@ -242,13 +359,12 @@ public class ListaCompraService : IListaCompraService
     }
 
     /// <summary>
-    /// Aggregate quantities: sum numeric values with same units, otherwise join distinct.
+    /// Aggregate quantities: sum numeric values with same units.
     /// </summary>
     private static string AggregateQuantities(List<string> quantities, int occurrences)
     {
         if (quantities.Count == 0) return occurrences > 1 ? $"x{occurrences}" : "";
 
-        // Try to parse all quantities as number + unit
         var parsed = new List<(decimal value, string unit)>();
         foreach (var q in quantities)
         {
@@ -260,7 +376,6 @@ public class ListaCompraService : IListaCompraService
             }
         }
 
-        // If all parsed and same unit, sum them
         if (parsed.Count == quantities.Count && parsed.Count > 0)
         {
             var byUnit = parsed.GroupBy(p => p.unit);
@@ -272,7 +387,6 @@ public class ListaCompraService : IListaCompraService
             }
         }
 
-        // Fallback: show distinct quantities joined, with count if repeated
         var distinct = quantities.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var result = string.Join(" + ", distinct);
         if (occurrences > distinct.Count)

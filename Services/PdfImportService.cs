@@ -117,15 +117,29 @@ public class PdfImportService : IPdfImportService
     }
 
     /// <summary>
-    /// Check if a word is a bullet/symbol character (non-alphanumeric single char).
+    /// Check if a word is a bullet/symbol character.
     /// PdfPig extracts Wingdings bullets as Private Use Area chars (U+F0B7 etc.)
+    /// Also detects bullets attached to words (e.g., "•HARINA").
     /// </summary>
     private static bool IsBulletWord(Word word)
     {
         var text = word.Text.Trim();
         if (text.Length == 0) return false;
-        if (text.Length > 2) return false;
-        return text.All(c => !char.IsLetterOrDigit(c));
+
+        // Pure symbol word (1-2 non-alphanumeric chars)
+        if (text.Length <= 2 && text.All(c => !char.IsLetterOrDigit(c)))
+            return true;
+
+        // First char is a PUA symbol or bullet attached to text
+        if (text.Length > 0)
+        {
+            var first = text[0];
+            if (first >= '\uF000' && first <= '\uF0FF') return true; // PUA (Wingdings)
+            if (first == '•' || first == '●' || first == '○' || first == '■' || first == '□')
+                return true;
+        }
+
+        return false;
     }
 
     // ==================== TABLE PAGE PROCESSING ====================
@@ -514,11 +528,28 @@ public class PdfImportService : IPdfImportService
         }
         else
         {
-            // No bullets detected: each line is a separate food item
+            // No bullets detected: use quantity-boundary heuristic.
+            // A new food item starts when a line begins with a WORD (not a quantity continuation).
+            // Lines that are just quantities or adjectives append to previous item.
+            var currentItemParts = new List<string>();
             foreach (var (lineText, _) in cleanLines)
             {
-                if (!IsNoiseLine(lineText) && !IsMealTypeHeader(lineText))
-                    foodItems.Add(lineText);
+                // If we have accumulated text and current line looks like a new food
+                // (starts with letter, not a quantity, not an adjective)
+                if (currentItemParts.Count > 0 && LooksLikeNewFoodItem(lineText))
+                {
+                    var itemText = string.Join(" ", currentItemParts);
+                    if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                        foodItems.Add(itemText);
+                    currentItemParts.Clear();
+                }
+                currentItemParts.Add(lineText);
+            }
+            if (currentItemParts.Count > 0)
+            {
+                var itemText = string.Join(" ", currentItemParts);
+                if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                    foodItems.Add(itemText);
             }
         }
 
@@ -805,13 +836,40 @@ public class PdfImportService : IPdfImportService
         return string.Join("\n", allLines);
     }
 
+    /// <summary>
+    /// Heuristic: does this line look like a NEW food item (vs continuation of previous)?
+    /// Used when no bullets are detected to split cell text into items.
+    /// </summary>
+    private static bool LooksLikeNewFoodItem(string lineText)
+    {
+        var t = lineText.Trim();
+        if (t.Length < 2) return false;
+
+        // If it starts with a digit, it's likely a quantity continuation (e.g., "100G", "2 REBANADAS")
+        if (char.IsDigit(t[0])) return false;
+
+        // If it starts with a lowercase letter, likely continuation
+        if (char.IsLower(t[0])) return false;
+
+        // Known adjectives/modifiers are continuations, not new items
+        var firstWord = t.Split(' ', StringSplitOptions.RemoveEmptyEntries).First();
+        var adjectives = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "HERVIDO", "COCIDO", "FRESCO", "INTEGRAL", "NATURAL", "PASTEURIZADA",
+            "PELADA", "PELADO", "DESGRASADO", "TOSTADO", "RALLADO", "GRANDE", "TIPO"
+        };
+        if (adjectives.Contains(firstWord)) return false;
+
+        // Otherwise, an uppercase-starting word is likely a new food item
+        return true;
+    }
+
     // ==================== NOISE FILTERS ====================
 
     private static bool IsNoiseLine(string linea)
     {
         var l = linea.Trim().ToLowerInvariant();
         if (l.Length < 2) return true;
-        // Standalone "PRE" is noise (part of PRE DESAYUNO label)
         if (l == "pre") return true;
         if (Regex.IsMatch(l, @"^(ingesta|ingredientes|rganutri|plan\s+nutricional|cuestionario|gasto\s+energ|necesidades\s+h[ií]dricas|datos\s+antropom|check\s+inicial|fecha|cita|peso|talla|perfil|espalda|manu)\b"))
             return true;
@@ -819,6 +877,20 @@ public class PdfImportService : IPdfImportService
         if (Regex.IsMatch(l, @"^entrenamiento\s+de\s+", RegexOptions.IgnoreCase)) return true;
         if (Regex.IsMatch(l, @"^dia\s+de\s+descanso$", RegexOptions.IgnoreCase)) return true;
         if (Regex.IsMatch(l, @"^d[ií]a\s+\d+$", RegexOptions.IgnoreCase)) return true;
+
+        // Medication/supplement schedule noise
+        if (l.Contains("masteron") || l.Contains("telmisartan") || l.Contains("ursobilane") ||
+            l.Contains("cipionato") || l.Contains("capsula") || l.Contains("1ml") ||
+            l.Contains("enantate"))
+            return true;
+        // Día off / supplement section text
+        if (l.Contains("día off") || l.Contains("dia off") || l.Contains("no entreno") ||
+            l.Contains("igual a los") || l.Contains("actividad física") ||
+            l.Contains("suplementación") || l.Contains("suplementacion"))
+            return true;
+        // Lines starting with "-Nac" or "-Desayuno" etc. (plain text day off format)
+        if (Regex.IsMatch(l, @"^-?\s*nac\b")) return true;
+
         return false;
     }
 
