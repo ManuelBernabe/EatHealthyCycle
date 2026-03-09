@@ -57,6 +57,9 @@ public class ImageImportService : IImageImportService
             _logger.LogInformation("Image saved to temp: {Path}, size: {Size} bytes, contentType: {CT}",
                 tempImage, new FileInfo(tempImage).Length, contentType);
 
+            // Detect colored meal header bars before OCR
+            var colorBands = await DetectColorBandsAsync(tempImage);
+
             var words = await RunTesseractAsync(tempImage);
 
             if (words.Count == 0)
@@ -66,7 +69,7 @@ public class ImageImportService : IImageImportService
 
             _logger.LogInformation("Tesseract extracted {Count} words from image", words.Count);
 
-            var dieta = ParseTableFromWords(words, usuarioId, nombreDieta, nombreArchivo);
+            var dieta = ParseTableFromWords(words, usuarioId, nombreDieta, nombreArchivo, colorBands);
 
             _db.Dietas.Add(dieta);
             await _db.SaveChangesAsync();
@@ -91,12 +94,14 @@ public class ImageImportService : IImageImportService
                 await imageStream.CopyToAsync(fs);
             }
 
+            var colorBands = await DetectColorBandsAsync(tempImage);
+
             var words = await RunTesseractAsync(tempImage);
             if (words.Count == 0)
                 return new { error = "No words extracted", wordCount = 0 };
 
             var dayColumns = DetectDayColumns(words);
-            var mealRows = dayColumns.Count > 0 ? DetectMealRows(words, dayColumns) : new List<MealRow>();
+            var mealRows = dayColumns.Count > 0 ? DetectMealRows(words, dayColumns, colorBands) : new List<MealRow>();
 
             var cells = new List<object>();
             foreach (var day in dayColumns)
@@ -127,6 +132,7 @@ public class ImageImportService : IImageImportService
             return new
             {
                 totalWords = words.Count,
+                colorBands = colorBands.Select(b => new { top = b.top, bottom = b.bottom }),
                 columns = dayColumns.Select(c => new { label = c.Label, centerX = c.HeaderCenterX, left = c.ContentLeft, right = c.ContentRight }),
                 meals = mealRows.Select(m => new { type = m.MealType.ToString(), top = m.ContentTop, bottom = m.ContentBottom }),
                 sampleWords = words.Take(50).Select(w => new { text = w.Text, x = w.Left, y = w.Top, w = w.Width, h = w.Height, block = w.BlockNum, line = w.LineNum }),
@@ -284,6 +290,100 @@ public class ImageImportService : IImageImportService
         }
     }
 
+    /// <summary>
+    /// Use ImageMagick to detect colored horizontal bars (meal headers) in the image.
+    /// Returns list of (top, bottom) Y ranges for each colored band found.
+    /// </summary>
+    internal async Task<List<(int top, int bottom)>> DetectColorBandsAsync(string imagePath)
+    {
+        var bands = new List<(int top, int bottom)>();
+
+        try
+        {
+            // Resize image to 1px wide (average all columns), output pixel colors
+            var psi = new ProcessStartInfo
+            {
+                FileName = "convert",
+                Arguments = $"\"{imagePath}\" -resize 1x! -depth 8 txt:-",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi);
+            if (process == null) return bands;
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) return bands;
+
+            // Parse pixel data: "0,Y: (R,G,B)  #hex  srgb(r,g,b)"
+            // Detect non-white/non-gray pixels (colored bars)
+            var coloredYs = new List<int>();
+            foreach (var line in output.Split('\n'))
+            {
+                if (line.StartsWith("#") || string.IsNullOrWhiteSpace(line)) continue;
+
+                // Extract Y and RGB values
+                var match = Regex.Match(line, @"0,(\d+):.*srgb\((\d+),(\d+),(\d+)\)");
+                if (!match.Success) continue;
+
+                var y = int.Parse(match.Groups[1].Value);
+                var r = int.Parse(match.Groups[2].Value);
+                var g = int.Parse(match.Groups[3].Value);
+                var b = int.Parse(match.Groups[4].Value);
+
+                // Check if pixel is "colored" (not white/light gray)
+                // White/light: R>220 && G>220 && B>220
+                // Also skip very dark (black text areas): R<30 && G<30 && B<30
+                var maxC = Math.Max(r, Math.Max(g, b));
+                var minC = Math.Min(r, Math.Min(g, b));
+                var saturation = maxC > 0 ? (maxC - minC) / (double)maxC : 0;
+                var brightness = (r + g + b) / 3.0;
+
+                // Colored bar: has saturation and not too bright (not white) and not too dark
+                if (saturation > 0.15 && brightness > 40 && brightness < 230)
+                {
+                    coloredYs.Add(y);
+                }
+            }
+
+            if (coloredYs.Count == 0) return bands;
+
+            // Group consecutive colored Y positions into bands
+            coloredYs.Sort();
+            int bandStart = coloredYs[0];
+            int bandEnd = coloredYs[0];
+
+            for (int i = 1; i < coloredYs.Count; i++)
+            {
+                if (coloredYs[i] <= bandEnd + 3) // Allow small gaps (antialiasing)
+                {
+                    bandEnd = coloredYs[i];
+                }
+                else
+                {
+                    if (bandEnd - bandStart >= 5) // Minimum band height of 5px
+                        bands.Add((bandStart, bandEnd));
+                    bandStart = coloredYs[i];
+                    bandEnd = coloredYs[i];
+                }
+            }
+            if (bandEnd - bandStart >= 5)
+                bands.Add((bandStart, bandEnd));
+
+            _logger.LogInformation("Color band detection: {Count} bands at Y=[{Bands}]",
+                bands.Count, string.Join(", ", bands.Select(b => $"{b.top}-{b.bottom}")));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Color band detection failed");
+        }
+
+        return bands;
+    }
+
     private async Task<List<OcrWord>> TryTesseractAsync(string imagePath, string lang, string psm)
     {
         var tsvOutput = Path.Combine(Path.GetDirectoryName(imagePath)!, $"{Guid.NewGuid()}");
@@ -424,7 +524,8 @@ public class ImageImportService : IImageImportService
         return words;
     }
 
-    internal Dieta ParseTableFromWords(List<OcrWord> words, int usuarioId, string nombreDieta, string nombreArchivo)
+    internal Dieta ParseTableFromWords(List<OcrWord> words, int usuarioId, string nombreDieta, string nombreArchivo,
+        List<(int top, int bottom)>? colorBands = null)
     {
         var dieta = new Dieta
         {
@@ -446,7 +547,7 @@ public class ImageImportService : IImageImportService
         }
 
         // Step 2: Find meal rows
-        var mealRows = DetectMealRows(words, dayColumns);
+        var mealRows = DetectMealRows(words, dayColumns, colorBands);
         _logger.LogInformation("Detected {Count} meal rows", mealRows.Count);
 
         if (mealRows.Count == 0)
@@ -728,8 +829,78 @@ public class ImageImportService : IImageImportService
         return new List<DayColumn>();
     }
 
-    internal List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns)
+    /// <summary>
+    /// Build MealRow objects from detected color bands. Each band is a meal header bar.
+    /// Content for each meal spans from the bottom of its header band to the top of the next header band.
+    /// </summary>
+    private List<MealRow> BuildMealRowsFromColorBands(List<(int top, int bottom)> colorBands, List<OcrWord> words)
     {
+        var mealTypes = new[] { TipoComida.Desayuno, TipoComida.Almuerzo, TipoComida.Comida, TipoComida.Merienda, TipoComida.Cena };
+        var mealLabels = new[] { "Desayuno", "Tentempié 1", "Comida", "Merienda 1", "Cena" };
+        var imageHeight = words.Count > 0 ? words.Max(w => w.Bottom) + 10 : 1300;
+
+        // Filter to bands that are below the day header row
+        // The first colored band should be Desayuno, which is below the day headers
+        // Day headers are usually in the top ~15% of the image
+        var headerThreshold = imageHeight * 0.12;
+        var mealBands = colorBands.Where(b => b.top > headerThreshold).OrderBy(b => b.top).ToList();
+
+        // Also skip the very first band if it's clearly a top navigation/header bar (Y < 5% of image)
+        // Keep only bands that look like meal headers (reasonable Y range)
+
+        if (mealBands.Count < 4)
+        {
+            _logger.LogInformation("Color bands: only {Count} bands below header threshold {Thresh}",
+                mealBands.Count, headerThreshold);
+            return new List<MealRow>();
+        }
+
+        // Take up to 5 bands (5 meal types)
+        if (mealBands.Count > 5)
+            mealBands = mealBands.Take(5).ToList();
+
+        var rows = new List<MealRow>();
+        for (int i = 0; i < Math.Min(mealBands.Count, mealTypes.Length); i++)
+        {
+            var band = mealBands[i];
+            var contentTop = (double)(band.bottom + 1); // Content starts just below the header band
+            var contentBottom = i < mealBands.Count - 1
+                ? (double)mealBands[i + 1].top  // Up to next header band
+                : (double)imageHeight;
+
+            rows.Add(new MealRow
+            {
+                MealType = mealTypes[i],
+                Label = mealLabels[Math.Min(i, mealLabels.Length - 1)],
+                Top = band.top,
+                CenterY = (band.top + band.bottom) / 2.0,
+                LabelLeft = 0,
+                LabelRight = 100,
+                ContentTop = contentTop,
+                ContentBottom = contentBottom
+            });
+        }
+
+        _logger.LogInformation("Color band meals: {Meals}",
+            string.Join(", ", rows.Select(r => $"{r.MealType} [{r.ContentTop:F0}-{r.ContentBottom:F0}]")));
+
+        return rows;
+    }
+
+    internal List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns,
+        List<(int top, int bottom)>? colorBands = null)
+    {
+        // Primary strategy: use color band detection (colored horizontal bars = meal headers)
+        if (colorBands != null && colorBands.Count >= 4)
+        {
+            var colorRows = BuildMealRowsFromColorBands(colorBands, words);
+            if (colorRows.Count >= 4)
+            {
+                _logger.LogInformation("Color band meal detection: {Count} meals", colorRows.Count);
+                return colorRows;
+            }
+        }
+
         var rows = new List<MealRow>();
         var headerTop = dayColumns.Min(c => c.HeaderTop);
 
