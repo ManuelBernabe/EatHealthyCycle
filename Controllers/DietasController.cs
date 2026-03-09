@@ -117,6 +117,7 @@ public class DietasController : ControllerBase
             new DietaResumenDto(dieta.Id, dieta.Nombre, dieta.Descripcion, dieta.FechaImportacion, dieta.ArchivoOriginal));
     }
 
+    [AllowAnonymous]
     [HttpPost("dietas/diagnostico-imagen")]
     public async Task<ActionResult<object>> DiagnosticoImagen(IFormFile archivo)
     {
