@@ -6,10 +6,16 @@ const App = {
     init() {
         API.init();
         if (API.isLoggedIn()) {
-            this.showPage('dashboard');
-            this.loadDashboard();
-            this.updateAdminNav();
-            this.checkForUpdates();
+            if (!API.user) {
+                // Token present but user data missing — force clean re-login
+                API.logout();
+                this.showPage('login');
+            } else {
+                this.showPage('dashboard');
+                this.loadDashboard();
+                this.updateAdminNav();
+                this.checkForUpdates();
+            }
         } else {
             this.showPage('login');
         }
@@ -199,12 +205,15 @@ const App = {
         const nombre = document.getElementById('diet-img-name').value;
         if (!file || !nombre) return this.toast('Selecciona una imagen y un nombre', 'error');
 
+        const uid = API.user?.id;
+        if (!uid) return this.toast('Sesión no válida, vuelve a iniciar sesión', 'error');
+
         const formData = new FormData();
         formData.append('archivo', file);
         formData.append('nombre', nombre);
 
         try {
-            await API.importarDietaImagen(API.user.id, formData);
+            await API.importarDietaImagen(uid, formData);
             this.toast('Dieta importada desde imagen correctamente');
             this.closeModal('modal-import-imagen');
             this.loadDashboard();
