@@ -191,59 +191,143 @@ public class ImageImportService : IImageImportService
         List<OcrWord>? bestResult = null;
         string bestDesc = "";
 
-        // Try each strategy with PSM 6 (uniform block) first - best for table images.
-        // PSM 4 (single column) and PSM 11 (sparse) as fallbacks.
-        // Do NOT use PSM 3 (fully automatic) - it reorganizes table content.
-        foreach (var strategy in PreprocessStrategies)
+        // Upscale image 2x before OCR — Tesseract accuracy improves significantly
+        // on larger images (better character resolution, clearer line separation).
+        var (ocrBase, scaleFactor) = await UpscaleImageForOcrAsync(imagePath);
+        try
         {
-            string inputPath;
-            if (string.IsNullOrEmpty(strategy))
+            // Try each strategy with PSM 6 (uniform block) first - best for table images.
+            // PSM 4 (single column) and PSM 11 (sparse) as fallbacks.
+            // Do NOT use PSM 3 (fully automatic) - it reorganizes table content.
+            foreach (var strategy in PreprocessStrategies)
             {
-                inputPath = imagePath;
-            }
-            else
-            {
-                inputPath = await PreprocessImageAsync(imagePath, strategy);
-            }
-
-            try
-            {
-                foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11") })
+                string inputPath;
+                if (string.IsNullOrEmpty(strategy))
                 {
-                    var words = await TryTesseractAsync(inputPath, lang, psm);
-                    var desc = $"strategy='{strategy}' lang={lang} psm={psm}";
+                    inputPath = ocrBase;
+                }
+                else
+                {
+                    inputPath = await PreprocessImageAsync(ocrBase, strategy);
+                }
 
-                    if (words.Count > 0)
+                try
+                {
+                    foreach (var (lang, psm) in new[] { ("spa", "6"), ("spa", "4"), ("spa", "11") })
                     {
-                        _logger.LogInformation("{Desc}: {Count} words, avgConf={Avg:F0}",
-                            desc, words.Count, words.Average(w => w.Confidence));
+                        var words = await TryTesseractAsync(inputPath, lang, psm);
+                        var desc = $"strategy='{strategy}' lang={lang} psm={psm}";
 
-                        if (bestResult == null || words.Count > bestResult.Count)
+                        if (words.Count > 0)
                         {
-                            bestResult = words;
-                            bestDesc = desc;
+                            _logger.LogInformation("{Desc}: {Count} words, avgConf={Avg:F0}",
+                                desc, words.Count, words.Average(w => w.Confidence));
+
+                            if (bestResult == null || words.Count > bestResult.Count)
+                            {
+                                bestResult = words;
+                                bestDesc = desc;
+                            }
                         }
                     }
                 }
-            }
-            finally
-            {
-                if (inputPath != imagePath && File.Exists(inputPath))
-                    File.Delete(inputPath);
-            }
+                finally
+                {
+                    if (inputPath != ocrBase && File.Exists(inputPath))
+                        File.Delete(inputPath);
+                }
 
-            // Use first strategy that gives a decent result (>50 words).
-            // Original image or gentle grayscale preserves spatial structure best.
-            if (bestResult != null && bestResult.Count > 50)
-            {
-                _logger.LogInformation("Using result: {Desc} with {Count} words", bestDesc, bestResult.Count);
-                return bestResult;
+                // Use first strategy that gives a decent result (>50 words).
+                // Original image or gentle grayscale preserves spatial structure best.
+                if (bestResult != null && bestResult.Count > 50)
+                {
+                    _logger.LogInformation("Using result: {Desc} with {Count} words", bestDesc, bestResult.Count);
+                    break;
+                }
             }
+        }
+        finally
+        {
+            if (ocrBase != imagePath && File.Exists(ocrBase))
+                File.Delete(ocrBase);
         }
 
         _logger.LogInformation("Final best result: {Desc} with {Count} words",
             bestDesc, bestResult?.Count ?? 0);
-        return bestResult ?? new List<OcrWord>();
+
+        var result = bestResult ?? new List<OcrWord>();
+
+        // Scale word coordinates back to original image space so they align with
+        // color band boundaries (which are detected on the original image).
+        if (scaleFactor > 1.0 && result.Count > 0)
+        {
+            foreach (var word in result)
+            {
+                word.Left   = (int)(word.Left   / scaleFactor);
+                word.Top    = (int)(word.Top    / scaleFactor);
+                word.Width  = Math.Max(1, (int)(word.Width  / scaleFactor));
+                word.Height = Math.Max(1, (int)(word.Height / scaleFactor));
+                word.Right  = word.Left + word.Width;
+                word.Bottom = word.Top  + word.Height;
+                word.CenterX = word.Left + word.Width  / 2.0;
+                word.CenterY = word.Top  + word.Height / 2.0;
+            }
+            _logger.LogInformation("Scaled {Count} word coordinates by 1/{Factor:F1} to original image space",
+                result.Count, scaleFactor);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Upscale image 2x using ImageMagick for better OCR quality.
+    /// Returns (upscaledPath, scaleFactor). Falls back to (original, 1.0) if IM unavailable.
+    /// </summary>
+    private async Task<(string path, double scaleFactor)> UpscaleImageForOcrAsync(string imagePath)
+    {
+        const double scale = 2.0;
+        var suffix = $"_2x{Guid.NewGuid():N}.png";
+        var upscaled = Path.Combine(Path.GetDirectoryName(imagePath)!,
+            $"{Path.GetFileNameWithoutExtension(imagePath)}{suffix}");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "convert",
+            Arguments = $"\"{imagePath}\" -resize 200% -filter Lanczos \"{upscaled}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                _logger.LogWarning("ImageMagick not available for upscaling, using original image");
+                return (imagePath, 1.0);
+            }
+
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("ImageMagick upscaling failed: {Err}", stderr);
+                return (imagePath, 1.0);
+            }
+
+            var size = new FileInfo(upscaled).Length;
+            _logger.LogInformation("Image upscaled 2x for OCR: {Path} ({Size} bytes)", upscaled, size);
+            return (upscaled, scale);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Upscaling failed, using original image");
+            if (File.Exists(upscaled)) File.Delete(upscaled);
+            return (imagePath, 1.0);
+        }
     }
 
     private async Task<string> PreprocessImageAsync(string imagePath, string convertArgs)
