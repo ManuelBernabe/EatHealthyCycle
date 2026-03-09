@@ -887,16 +887,37 @@ public class ImageImportService : IImageImportService
                 string.Join("; ", scored.Take(8).Select(c =>
                     $"Y={c.CenterY:F0} cols={c.ColumnCount} avgGap={c.AvgGapSize:F0} score={c.Score:F0}")));
 
-            // Select top 4 clusters with minimum separation
-            var contentRange = imageHeight - contentStartY;
-            var minSep = contentRange / 8.0;
+            // "Split largest section" algorithm: iteratively place boundaries
+            // by splitting the largest current section with the best-scoring gap
             var selected = new List<double>();
+            var sections = new List<(double start, double end)> { (contentStartY, (double)imageHeight) };
 
-            foreach (var cluster in scored)
+            for (int iter = 0; iter < 4 && scored.Count > 0; iter++)
             {
-                if (selected.Count >= 4) break;
-                if (selected.All(s => Math.Abs(s - cluster.CenterY) >= minSep))
-                    selected.Add(cluster.CenterY);
+                // Find the largest section
+                var largestIdx = 0;
+                for (int si = 1; si < sections.Count; si++)
+                {
+                    if (sections[si].end - sections[si].start > sections[largestIdx].end - sections[largestIdx].start)
+                        largestIdx = si;
+                }
+                var largest = sections[largestIdx];
+
+                // Find best-scoring gap cluster within that section (with some margin)
+                var margin = 15.0;
+                var bestCluster = scored
+                    .Where(c => c.CenterY > largest.start + margin && c.CenterY < largest.end - margin)
+                    .OrderByDescending(c => c.Score)
+                    .FirstOrDefault();
+
+                if (bestCluster == null) break;
+
+                selected.Add(bestCluster.CenterY);
+
+                // Split the section at this boundary
+                sections.RemoveAt(largestIdx);
+                sections.Insert(largestIdx, (largest.start, bestCluster.CenterY));
+                sections.Insert(largestIdx + 1, (bestCluster.CenterY, largest.end));
             }
 
             selected.Sort();
