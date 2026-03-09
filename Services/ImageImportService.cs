@@ -292,19 +292,48 @@ public class ImageImportService : IImageImportService
 
     /// <summary>
     /// Use ImageMagick to detect colored horizontal bars (meal headers) in the image.
+    /// Tries multiple crop strategies: full width average, left strip, center strip.
     /// Returns list of (top, bottom) Y ranges for each colored band found.
     /// </summary>
     internal async Task<List<(int top, int bottom)>> DetectColorBandsAsync(string imagePath)
+    {
+        // Try multiple crop strategies - meal header bars may not span full width
+        var strategies = new[]
+        {
+            "-resize 1x! -depth 8",                           // Full width average
+            "-crop 60x0+0+0 +repage -resize 1x! -depth 8",   // Left 60px strip
+            "-crop 60x0+500+0 +repage -resize 1x! -depth 8",  // Center strip
+        };
+
+        List<(int top, int bottom)> bestBands = new();
+
+        foreach (var strategy in strategies)
+        {
+            var bands = await DetectColorBandsWithStrategy(imagePath, strategy);
+            _logger.LogInformation("Color detection strategy '{S}': {Count} bands", strategy, bands.Count);
+            if (bands.Count > bestBands.Count)
+                bestBands = bands;
+            if (bestBands.Count >= 4)
+                break; // Found enough bands
+        }
+
+        if (bestBands.Count > 0)
+            _logger.LogInformation("Color band detection: {Count} bands at Y=[{Bands}]",
+                bestBands.Count, string.Join(", ", bestBands.Select(b => $"{b.top}-{b.bottom}")));
+
+        return bestBands;
+    }
+
+    private async Task<List<(int top, int bottom)>> DetectColorBandsWithStrategy(string imagePath, string convertArgs)
     {
         var bands = new List<(int top, int bottom)>();
 
         try
         {
-            // Resize image to 1px wide (average all columns), output pixel colors
             var psi = new ProcessStartInfo
             {
                 FileName = "convert",
-                Arguments = $"\"{imagePath}\" -resize 1x! -depth 8 txt:-",
+                Arguments = $"\"{imagePath}\" {convertArgs} txt:-",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -318,15 +347,17 @@ public class ImageImportService : IImageImportService
             await process.WaitForExitAsync();
             if (process.ExitCode != 0) return bands;
 
-            // Parse pixel data: "0,Y: (R,G,B)  #hex  srgb(r,g,b)"
-            // Detect non-white/non-gray pixels (colored bars)
+            // Parse pixel data - handle both srgb() and srgba() formats (IM6 vs IM7)
+            // Also handle raw (R,G,B) format as fallback
             var coloredYs = new List<int>();
             foreach (var line in output.Split('\n'))
             {
                 if (line.StartsWith("#") || string.IsNullOrWhiteSpace(line)) continue;
 
-                // Extract Y and RGB values
-                var match = Regex.Match(line, @"0,(\d+):.*srgb\((\d+),(\d+),(\d+)\)");
+                // Try srgb/srgba format first, then raw (R,G,B) format
+                var match = Regex.Match(line, @"0,(\d+):.*srgba?\((\d+),(\d+),(\d+)");
+                if (!match.Success)
+                    match = Regex.Match(line, @"0,(\d+):\s*\((\d+),(\d+),(\d+)");
                 if (!match.Success) continue;
 
                 var y = int.Parse(match.Groups[1].Value);
@@ -334,19 +365,27 @@ public class ImageImportService : IImageImportService
                 var g = int.Parse(match.Groups[3].Value);
                 var b = int.Parse(match.Groups[4].Value);
 
-                // Check if pixel is "colored" (not white/light gray)
-                // White/light: R>220 && G>220 && B>220
-                // Also skip very dark (black text areas): R<30 && G<30 && B<30
+                // Handle 16-bit values (ImageMagick 7 may output 0-65535)
+                if (r > 255 || g > 255 || b > 255)
+                {
+                    r = r * 255 / 65535;
+                    g = g * 255 / 65535;
+                    b = b * 255 / 65535;
+                }
+
                 var maxC = Math.Max(r, Math.Max(g, b));
                 var minC = Math.Min(r, Math.Min(g, b));
                 var saturation = maxC > 0 ? (maxC - minC) / (double)maxC : 0;
                 var brightness = (r + g + b) / 3.0;
 
-                // Colored bar: has saturation and not too bright (not white) and not too dark
-                if (saturation > 0.15 && brightness > 40 && brightness < 230)
-                {
+                // Detect colored pixels with lenient thresholds:
+                // 1. Has noticeable color saturation (not white/gray)
+                // 2. Or is distinctly non-white (darker than normal table cells)
+                var isColored = (saturation > 0.08 && brightness > 30 && brightness < 240)
+                             || (brightness < 190 && maxC - minC > 15);
+
+                if (isColored)
                     coloredYs.Add(y);
-                }
             }
 
             if (coloredYs.Count == 0) return bands;
@@ -358,27 +397,24 @@ public class ImageImportService : IImageImportService
 
             for (int i = 1; i < coloredYs.Count; i++)
             {
-                if (coloredYs[i] <= bandEnd + 3) // Allow small gaps (antialiasing)
+                if (coloredYs[i] <= bandEnd + 3)
                 {
                     bandEnd = coloredYs[i];
                 }
                 else
                 {
-                    if (bandEnd - bandStart >= 5) // Minimum band height of 5px
+                    if (bandEnd - bandStart >= 3) // Min 3px band height
                         bands.Add((bandStart, bandEnd));
                     bandStart = coloredYs[i];
                     bandEnd = coloredYs[i];
                 }
             }
-            if (bandEnd - bandStart >= 5)
+            if (bandEnd - bandStart >= 3)
                 bands.Add((bandStart, bandEnd));
-
-            _logger.LogInformation("Color band detection: {Count} bands at Y=[{Bands}]",
-                bands.Count, string.Join(", ", bands.Select(b => $"{b.top}-{b.bottom}")));
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Color band detection failed");
+            _logger.LogWarning(ex, "Color band detection failed for strategy");
         }
 
         return bands;
@@ -1059,9 +1095,11 @@ public class ImageImportService : IImageImportService
                     $"Y={c.CenterY:F0} cols={c.ColumnCount} avgGap={c.AvgGapSize:F0} score={c.Score:F0}")));
 
             // "Split largest section" algorithm: iteratively place boundaries
-            // by splitting the largest current section with the best-scoring gap
+            // by splitting the largest current section with the best-scoring gap.
+            // Both halves must contain content words (prevents empty sections).
             var selected = new List<double>();
             var sections = new List<(double start, double end)> { (contentStartY, (double)imageHeight) };
+            var minSectionHeight = 40.0; // Minimum height for a resulting section
 
             for (int iter = 0; iter < 4 && scored.Count > 0; iter++)
             {
@@ -1074,10 +1112,20 @@ public class ImageImportService : IImageImportService
                 }
                 var largest = sections[largestIdx];
 
-                // Find best-scoring gap cluster within that section (with some margin)
-                var margin = 15.0;
+                // Find best-scoring gap cluster within that section
+                // Require: margin from edges, both halves have words, minimum section size
+                var margin = Math.Max(15.0, (largest.end - largest.start) * 0.08);
                 var bestCluster = scored
                     .Where(c => c.CenterY > largest.start + margin && c.CenterY < largest.end - margin)
+                    .Where(c => (c.CenterY - largest.start) >= minSectionHeight
+                             && (largest.end - c.CenterY) >= minSectionHeight)
+                    .Where(c =>
+                    {
+                        // Both halves must contain content words
+                        var hasAbove = contentWords.Any(w => w.CenterY >= largest.start && w.CenterY < c.CenterY);
+                        var hasBelow = contentWords.Any(w => w.CenterY > c.CenterY && w.CenterY <= largest.end);
+                        return hasAbove && hasBelow;
+                    })
                     .OrderByDescending(c => c.Score)
                     .FirstOrDefault();
 
