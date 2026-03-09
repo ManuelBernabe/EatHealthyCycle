@@ -1101,49 +1101,64 @@ public class ImageImportService : IImageImportService
                 string.Join("; ", scored.Take(8).Select(c =>
                     $"Y={c.CenterY:F0} cols={c.ColumnCount} avgGap={c.AvgGapSize:F0} score={c.Score:F0}")));
 
-            // "Split largest section" algorithm: iteratively place boundaries
-            // by splitting the largest current section with the best-scoring gap.
-            // Both halves must contain content words (prevents empty sections).
+            // "Global best gap" algorithm: iteratively place the highest-scoring
+            // gap cluster that validly splits ANY current section.
+            // This avoids always targeting the largest section (which may not need splitting).
             var selected = new List<double>();
             var sections = new List<(double start, double end)> { (contentStartY, (double)imageHeight) };
-            var minSectionHeight = 40.0; // Minimum height for a resulting section
+            var minSectionHeight = 40.0;
+            var usedClusterYs = new HashSet<double>(); // Track used clusters
 
             for (int iter = 0; iter < 4 && scored.Count > 0; iter++)
             {
-                // Find the largest section
-                var largestIdx = 0;
-                for (int si = 1; si < sections.Count; si++)
+                // Find the globally best gap cluster that validly splits any section
+                (int sectionIdx, double clusterY)? bestSplit = null;
+                double bestScore = -1;
+
+                foreach (var cluster in scored)
                 {
-                    if (sections[si].end - sections[si].start > sections[largestIdx].end - sections[largestIdx].start)
-                        largestIdx = si;
-                }
-                var largest = sections[largestIdx];
+                    if (usedClusterYs.Contains(cluster.CenterY)) continue;
 
-                // Find best-scoring gap cluster within that section
-                // Require: margin from edges, both halves have words, minimum section size
-                var margin = Math.Max(15.0, (largest.end - largest.start) * 0.08);
-                var bestCluster = scored
-                    .Where(c => c.CenterY > largest.start + margin && c.CenterY < largest.end - margin)
-                    .Where(c => (c.CenterY - largest.start) >= minSectionHeight
-                             && (largest.end - c.CenterY) >= minSectionHeight)
-                    .Where(c =>
+                    // Find which section this cluster falls in
+                    for (int si = 0; si < sections.Count; si++)
                     {
+                        var sec = sections[si];
+                        var margin = Math.Max(15.0, (sec.end - sec.start) * 0.08);
+
+                        if (cluster.CenterY <= sec.start + margin || cluster.CenterY >= sec.end - margin)
+                            continue;
+                        if (cluster.CenterY - sec.start < minSectionHeight || sec.end - cluster.CenterY < minSectionHeight)
+                            continue;
+
                         // Both halves must contain content words
-                        var hasAbove = contentWords.Any(w => w.CenterY >= largest.start && w.CenterY < c.CenterY);
-                        var hasBelow = contentWords.Any(w => w.CenterY > c.CenterY && w.CenterY <= largest.end);
-                        return hasAbove && hasBelow;
-                    })
-                    .OrderByDescending(c => c.Score)
-                    .FirstOrDefault();
+                        var hasAbove = contentWords.Any(w => w.CenterY >= sec.start && w.CenterY < cluster.CenterY);
+                        var hasBelow = contentWords.Any(w => w.CenterY > cluster.CenterY && w.CenterY <= sec.end);
+                        if (!hasAbove || !hasBelow) continue;
 
-                if (bestCluster == null) break;
+                        if (cluster.Score > bestScore)
+                        {
+                            bestScore = cluster.Score;
+                            bestSplit = (si, cluster.CenterY);
+                        }
+                        break; // Cluster can only be in one section
+                    }
 
-                selected.Add(bestCluster.CenterY);
+                    if (bestSplit != null && cluster.Score < bestScore)
+                        break; // scored is sorted desc, no better option possible
+                }
 
-                // Split the section at this boundary
-                sections.RemoveAt(largestIdx);
-                sections.Insert(largestIdx, (largest.start, bestCluster.CenterY));
-                sections.Insert(largestIdx + 1, (bestCluster.CenterY, largest.end));
+                if (bestSplit == null) break;
+
+                var splitIdx = bestSplit.Value.sectionIdx;
+                var splitY = bestSplit.Value.clusterY;
+                selected.Add(splitY);
+                usedClusterYs.Add(splitY);
+
+                // Split the section
+                var old = sections[splitIdx];
+                sections.RemoveAt(splitIdx);
+                sections.Insert(splitIdx, (old.start, splitY));
+                sections.Insert(splitIdx + 1, (splitY, old.end));
             }
 
             selected.Sort();
