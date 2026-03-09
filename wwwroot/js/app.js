@@ -400,6 +400,13 @@ const App = {
             el.classList.toggle('checked');
             el.innerHTML = res.completada ? '✓' : '';
             el.nextElementSibling.classList.toggle('completed');
+            // Update in-memory plan so switching days doesn't reset state
+            if (this.currentPlan) {
+                for (const dia of this.currentPlan.dias) {
+                    const comida = dia.comidas.find(c => c.id === id);
+                    if (comida) { comida.completada = res.completada; break; }
+                }
+            }
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
