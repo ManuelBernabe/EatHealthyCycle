@@ -818,75 +818,111 @@ public class ImageImportService : IImageImportService
         var headerTop = dayColumns.Count > 0 ? dayColumns.Min(c => c.HeaderTop) : 0;
         var imageHeight = words.Max(w => w.Bottom) + 10;
 
-        // Skip well past the header area
-        var contentStartY = Math.Max(headerTop + 80, (int)(imageHeight * 0.05));
+        // Skip past the day header row only (headers are ~40-60px tall)
+        var contentStartY = dayColumns.Count > 0
+            ? dayColumns.Max(c => c.HeaderTop) + 50
+            : (int)(imageHeight * 0.05);
         var contentWords = words.Where(w => w.Top > contentStartY).OrderBy(w => w.Top).ToList();
         if (contentWords.Count < 10) return new List<MealRow>();
 
         _logger.LogInformation("Gap detection: contentStartY={StartY}, {Count} content words (imageHeight={Height})",
             contentStartY, contentWords.Count, imageHeight);
 
-        // KEY FIX: Use words from a SINGLE column to detect Y-gaps.
-        // Using all words fails because words from 7 columns at the same Y fill the gaps
-        // between meal sections. A single column shows clear gaps between meals.
-        var bestGaps = new List<(int gapTop, int gapBottom, int gapSize)>();
+        List<(int gapTop, int gapBottom, int gapSize)> largeGaps;
 
-        if (dayColumns.Count > 0)
+        if (dayColumns.Count >= 3)
         {
-            // Try each column separately, pick the one that gives the best 4 gaps
-            foreach (var col in dayColumns)
+            // CROSS-COLUMN GAP CONSENSUS: A real meal boundary (teal bar spanning full width)
+            // creates a gap in ALL columns. An intra-meal gap only affects 1-2 columns.
+            // Collect gaps from each column, cluster by Y-position, score by column consensus.
+            var allColumnGaps = new List<(double centerY, int gapSize, int colIdx)>();
+
+            for (int ci = 0; ci < dayColumns.Count; ci++)
             {
+                var col = dayColumns[ci];
                 var colWords = contentWords
                     .Where(w => w.CenterX >= col.ContentLeft && w.CenterX <= col.ContentRight)
                     .OrderBy(w => w.Top)
                     .ToList();
 
-                if (colWords.Count < 5) continue;
+                if (colWords.Count < 3) continue;
 
-                var colGaps = FindYGaps(colWords);
-                _logger.LogInformation("Column {Col} ({Left}-{Right}): {Words} words, {Gaps} gaps, sizes: [{Sizes}]",
-                    col.Label, col.ContentLeft, col.ContentRight, colWords.Count, colGaps.Count,
-                    string.Join(",", colGaps.OrderByDescending(g => g.gapSize).Take(6).Select(g => g.gapSize)));
+                var gaps = FindYGaps(colWords);
+                foreach (var g in gaps)
+                    allColumnGaps.Add(((g.gapTop + g.gapBottom) / 2.0, g.gapSize, ci));
 
-                if (colGaps.Count >= 4)
-                {
-                    // Pick the column with 4 largest gaps that are most evenly sized
-                    var top4 = colGaps.OrderByDescending(g => g.gapSize).Take(4).ToList();
-                    var bestTop4 = bestGaps.Count > 0
-                        ? bestGaps.OrderByDescending(g => g.gapSize).Take(4).ToList()
-                        : new List<(int gapTop, int gapBottom, int gapSize)>();
-
-                    if (bestGaps.Count == 0 || top4.Min(g => g.gapSize) > (bestTop4.Count > 0 ? bestTop4.Min(g => g.gapSize) : 0))
-                    {
-                        bestGaps = colGaps;
-                    }
-                }
-                else if (colGaps.Count > bestGaps.Count)
-                {
-                    bestGaps = colGaps;
-                }
+                _logger.LogInformation("Column {Col}: {Words} words, {Gaps} gaps, sizes: [{Sizes}]",
+                    col.Label, colWords.Count, gaps.Count,
+                    string.Join(",", gaps.OrderByDescending(g => g.gapSize).Take(6).Select(g => g.gapSize)));
             }
-        }
 
-        // Fallback: if no column gave good results, use all words but with stricter grouping
-        if (bestGaps.Count < 4)
-        {
-            _logger.LogInformation("Per-column gap detection found {Count} gaps, trying all-words fallback", bestGaps.Count);
-            var allGaps = FindYGaps(contentWords);
-            if (allGaps.Count > bestGaps.Count)
-                bestGaps = allGaps;
-        }
+            // Cluster gaps by Y-center (within tolerance)
+            var tolerance = 40.0; // gaps within 40px of each other are clustered
+            var clusters = new List<List<(double centerY, int gapSize, int colIdx)>>();
 
-        if (bestGaps.Count == 0) return new List<MealRow>();
+            foreach (var gap in allColumnGaps.OrderBy(g => g.centerY))
+            {
+                var matched = clusters.FirstOrDefault(c =>
+                    Math.Abs(c.Average(g => g.centerY) - gap.centerY) < tolerance);
+                if (matched != null)
+                    matched.Add(gap);
+                else
+                    clusters.Add(new List<(double centerY, int gapSize, int colIdx)> { gap });
+            }
 
-        // Take the 4 largest gaps as section boundaries (5 meal sections)
-        var largeGaps = bestGaps.OrderByDescending(g => g.gapSize)
-            .Take(4)
-            .OrderBy(g => g.gapTop)
+            // Score each cluster: prefer gaps that appear in MANY columns (real boundaries)
+            // over gaps that appear in few columns (intra-meal gaps)
+            var scored = clusters.Select(c => new
+            {
+                CenterY = c.Average(g => g.centerY),
+                ColumnCount = c.Select(g => g.colIdx).Distinct().Count(),
+                AvgGapSize = c.Average(g => (double)g.gapSize),
+                // Score = columns^2 × avgGapSize (heavily weight column consensus)
+                Score = Math.Pow(c.Select(g => g.colIdx).Distinct().Count(), 2) * c.Average(g => (double)g.gapSize)
+            })
+            .OrderByDescending(c => c.Score)
             .ToList();
 
-        _logger.LogInformation("Gap analysis: {Total} gaps, top4: {Sizes}, found {Large} section boundaries",
-            bestGaps.Count, string.Join(",", largeGaps.Select(g => g.gapSize)), largeGaps.Count);
+            _logger.LogInformation("Gap clusters: {Clusters}",
+                string.Join("; ", scored.Take(8).Select(c =>
+                    $"Y={c.CenterY:F0} cols={c.ColumnCount} avgGap={c.AvgGapSize:F0} score={c.Score:F0}")));
+
+            // Select top 4 clusters with minimum separation
+            var contentRange = imageHeight - contentStartY;
+            var minSep = contentRange / 8.0;
+            var selected = new List<double>();
+
+            foreach (var cluster in scored)
+            {
+                if (selected.Count >= 4) break;
+                if (selected.All(s => Math.Abs(s - cluster.CenterY) >= minSep))
+                    selected.Add(cluster.CenterY);
+            }
+
+            selected.Sort();
+            largeGaps = selected.Select(y => (
+                gapTop: (int)(y - 10),
+                gapBottom: (int)(y + 10),
+                gapSize: 20
+            )).ToList();
+
+            _logger.LogInformation("Cross-column consensus: {Count} boundaries at Y=[{Ys}]",
+                largeGaps.Count, string.Join(",", selected.Select(y => y.ToString("F0"))));
+        }
+        else
+        {
+            // Fallback: single-column or all-words gap detection
+            var allGaps = FindYGaps(contentWords);
+            if (allGaps.Count == 0) return new List<MealRow>();
+
+            largeGaps = allGaps.OrderByDescending(g => g.gapSize)
+                .Take(4)
+                .OrderBy(g => g.gapTop)
+                .ToList();
+
+            _logger.LogInformation("Fallback gap analysis: {Total} gaps, top4: {Sizes}",
+                allGaps.Count, string.Join(",", largeGaps.Select(g => g.gapSize)));
+        }
 
         // Build meal sections from gaps
         var mealTypes = new[] { TipoComida.Desayuno, TipoComida.Almuerzo, TipoComida.Comida, TipoComida.Merienda, TipoComida.Cena };

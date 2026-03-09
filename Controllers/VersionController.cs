@@ -7,7 +7,7 @@ namespace EatHealthyCycle.Controllers;
 public class VersionController : ControllerBase
 {
     // Increment this on each deploy to trigger update notification
-    private const string AppVersion = "1.0.18";
+    private const string AppVersion = "1.0.19";
 
     [HttpGet("version")]
     public IActionResult GetVersion()
