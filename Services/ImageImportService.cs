@@ -866,8 +866,10 @@ public class ImageImportService : IImageImportService
     }
 
     /// <summary>
-    /// Build MealRow objects from detected color bands. Each band is a meal header bar.
-    /// Content for each meal spans from the bottom of its header band to the top of the next header band.
+    /// Build MealRow objects from detected color bands.
+    /// Two modes:
+    /// - Thin bands (≤50px avg): bands are header bars, content is between them.
+    /// - Thick bands (>50px avg): bands ARE the content areas (colored cell backgrounds).
     /// </summary>
     private List<MealRow> BuildMealRowsFromColorBands(List<(int top, int bottom)> colorBands, List<OcrWord> words)
     {
@@ -875,59 +877,86 @@ public class ImageImportService : IImageImportService
         var mealLabels = new[] { "Desayuno", "Tentempié 1", "Comida", "Merienda 1", "Cena" };
         var imageHeight = words.Count > 0 ? words.Max(w => w.Bottom) + 10 : 1300;
 
-        // Filter to bands that are below the day header row
-        // The first colored band should be Desayuno, which is below the day headers
-        // Day headers are usually in the top ~15% of the image
-        var headerThreshold = imageHeight * 0.12;
-        var mealBands = colorBands.Where(b => b.top > headerThreshold).OrderBy(b => b.top).ToList();
+        var sortedBands = colorBands.OrderBy(b => b.top).ToList();
+        var avgBandHeight = sortedBands.Count > 0 ? sortedBands.Average(b => b.bottom - b.top) : 0;
 
-        // Meal header bars are thin (typically 10-35px tall).
-        // If bands are thick (>50px), they're content cell backgrounds, not headers.
-        var avgBandHeight = mealBands.Count > 0 ? mealBands.Average(b => b.bottom - b.top) : 0;
+        List<(int top, int bottom)> mealBands;
+
         if (avgBandHeight > 50)
         {
-            _logger.LogInformation("Color bands avg height {Avg:F0}px too thick (content areas, not headers), skipping",
-                avgBandHeight);
-            return new List<MealRow>();
-        }
+            // Thick bands = content cell backgrounds.
+            // Each band IS the content area for a meal.
+            // Keep bands that actually contain content words.
+            mealBands = sortedBands
+                .Where(b => words.Any(w => w.CenterY >= b.top && w.CenterY <= b.bottom))
+                .ToList();
 
-        if (mealBands.Count < 4)
-        {
-            _logger.LogInformation("Color bands: only {Count} bands below header threshold {Thresh}",
-                mealBands.Count, headerThreshold);
-            return new List<MealRow>();
-        }
+            _logger.LogInformation("Thick color bands (avg {Avg:F0}px) = content areas. {Count} bands contain words",
+                avgBandHeight, mealBands.Count);
 
-        // Take up to 5 bands (5 meal types)
-        if (mealBands.Count > 5)
-            mealBands = mealBands.Take(5).ToList();
+            if (mealBands.Count < 4) return new List<MealRow>();
+            if (mealBands.Count > 5) mealBands = mealBands.Take(5).ToList();
 
-        var rows = new List<MealRow>();
-        for (int i = 0; i < Math.Min(mealBands.Count, mealTypes.Length); i++)
-        {
-            var band = mealBands[i];
-            var contentTop = (double)(band.bottom + 1); // Content starts just below the header band
-            var contentBottom = i < mealBands.Count - 1
-                ? (double)mealBands[i + 1].top  // Up to next header band
-                : (double)imageHeight;
-
-            rows.Add(new MealRow
+            var rows = new List<MealRow>();
+            for (int i = 0; i < Math.Min(mealBands.Count, mealTypes.Length); i++)
             {
-                MealType = mealTypes[i],
-                Label = mealLabels[Math.Min(i, mealLabels.Length - 1)],
-                Top = band.top,
-                CenterY = (band.top + band.bottom) / 2.0,
-                LabelLeft = 0,
-                LabelRight = 100,
-                ContentTop = contentTop,
-                ContentBottom = contentBottom
-            });
+                var band = mealBands[i];
+                rows.Add(new MealRow
+                {
+                    MealType = mealTypes[i],
+                    Label = mealLabels[i],
+                    Top = band.top,
+                    CenterY = (band.top + band.bottom) / 2.0,
+                    LabelLeft = 0,
+                    LabelRight = 100,
+                    ContentTop = band.top,       // Band IS the content
+                    ContentBottom = band.bottom
+                });
+            }
+
+            _logger.LogInformation("Color band meals (content mode): {Meals}",
+                string.Join(", ", rows.Select(r => $"{r.MealType} [{r.ContentTop:F0}-{r.ContentBottom:F0}]")));
+            return rows;
         }
+        else
+        {
+            // Thin bands = header bars, content is between consecutive header bands.
+            var headerThreshold = imageHeight * 0.12;
+            mealBands = sortedBands.Where(b => b.top > headerThreshold).ToList();
 
-        _logger.LogInformation("Color band meals: {Meals}",
-            string.Join(", ", rows.Select(r => $"{r.MealType} [{r.ContentTop:F0}-{r.ContentBottom:F0}]")));
+            if (mealBands.Count < 4)
+            {
+                _logger.LogInformation("Thin color bands: only {Count} bands below header threshold", mealBands.Count);
+                return new List<MealRow>();
+            }
+            if (mealBands.Count > 5) mealBands = mealBands.Take(5).ToList();
 
-        return rows;
+            var rows = new List<MealRow>();
+            for (int i = 0; i < Math.Min(mealBands.Count, mealTypes.Length); i++)
+            {
+                var band = mealBands[i];
+                var contentTop = (double)(band.bottom + 1);
+                var contentBottom = i < mealBands.Count - 1
+                    ? (double)mealBands[i + 1].top
+                    : (double)imageHeight;
+
+                rows.Add(new MealRow
+                {
+                    MealType = mealTypes[i],
+                    Label = mealLabels[i],
+                    Top = band.top,
+                    CenterY = (band.top + band.bottom) / 2.0,
+                    LabelLeft = 0,
+                    LabelRight = 100,
+                    ContentTop = contentTop,
+                    ContentBottom = contentBottom
+                });
+            }
+
+            _logger.LogInformation("Color band meals (header mode): {Meals}",
+                string.Join(", ", rows.Select(r => $"{r.MealType} [{r.ContentTop:F0}-{r.ContentBottom:F0}]")));
+            return rows;
+        }
     }
 
     internal List<MealRow> DetectMealRows(List<OcrWord> words, List<DayColumn> dayColumns,
