@@ -78,6 +78,96 @@ public class ImageImportService : IImageImportService
         }
     }
 
+    public async Task<object> DiagnosticAnalyzeAsync(Stream imageStream, string contentType)
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "eathealthy_ocr");
+        Directory.CreateDirectory(tempDir);
+        var tempImage = Path.Combine(tempDir, $"{Guid.NewGuid()}{GetExtension(contentType)}");
+
+        try
+        {
+            await using (var fs = File.Create(tempImage))
+            {
+                await imageStream.CopyToAsync(fs);
+            }
+
+            var words = await RunTesseractAsync(tempImage);
+            if (words.Count == 0)
+                return new { error = "No words extracted", wordCount = 0 };
+
+            var dayColumns = DetectDayColumns(words);
+            var mealRows = dayColumns.Count > 0 ? DetectMealRows(words, dayColumns) : new List<MealRow>();
+
+            var cells = new List<object>();
+            foreach (var day in dayColumns)
+            {
+                foreach (var meal in mealRows)
+                {
+                    var cellWords = GetCellWords(words, day, meal);
+                    var foodItems = ExtractFoodItems(cellWords);
+
+                    cells.Add(new
+                    {
+                        day = day.Label,
+                        dayCol = $"{day.ContentLeft:F0}-{day.ContentRight:F0}",
+                        meal = meal.MealType.ToString(),
+                        mealY = $"{meal.ContentTop:F0}-{meal.ContentBottom:F0}",
+                        wordCount = cellWords.Count,
+                        words = cellWords.Take(20).Select(w => new
+                        {
+                            text = w.Text, x = w.Left, y = w.Top, w = w.Width, h = w.Height,
+                            block = w.BlockNum, line = w.LineNum, par = w.ParNum, conf = w.Confidence
+                        }),
+                        foodItems = foodItems.Select(f => new { name = f.Name, qty = f.Quantity }),
+                        rawLines = cellWords.Count > 0 ? GetDiagnosticLines(cellWords) : Array.Empty<string>()
+                    });
+                }
+            }
+
+            return new
+            {
+                totalWords = words.Count,
+                columns = dayColumns.Select(c => new { label = c.Label, centerX = c.HeaderCenterX, left = c.ContentLeft, right = c.ContentRight }),
+                meals = mealRows.Select(m => new { type = m.MealType.ToString(), top = m.ContentTop, bottom = m.ContentBottom }),
+                sampleWords = words.Take(50).Select(w => new { text = w.Text, x = w.Left, y = w.Top, w = w.Width, h = w.Height, block = w.BlockNum, line = w.LineNum }),
+                cells
+            };
+        }
+        finally
+        {
+            if (File.Exists(tempImage)) File.Delete(tempImage);
+        }
+    }
+
+    private static string[] GetDiagnosticLines(List<OcrWord> cellWords)
+    {
+        var sorted = cellWords.OrderBy(w => w.CenterY).ThenBy(w => w.Left).ToList();
+        var avgHeight = sorted.Average(w => (double)w.Height);
+        var lineBreakThreshold = Math.Max(avgHeight * 0.4, 8);
+
+        var lines = new List<string>();
+        var currentLine = new List<OcrWord> { sorted[0] };
+
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            var gap = sorted[i].CenterY - sorted[i - 1].CenterY;
+            if (gap > lineBreakThreshold)
+            {
+                lines.Add($"[Y={currentLine[0].Top},gap={gap:F0}] " +
+                    string.Join(" ", currentLine.OrderBy(w => w.Left).Select(w => w.Text)));
+                currentLine = new List<OcrWord> { sorted[i] };
+            }
+            else
+            {
+                currentLine.Add(sorted[i]);
+            }
+        }
+        lines.Add($"[Y={currentLine[0].Top}] " +
+            string.Join(" ", currentLine.OrderBy(w => w.Left).Select(w => w.Text)));
+
+        return lines.ToArray();
+    }
+
     // Preprocessing strategies: try gentlest first, then more aggressive
     private static readonly string[] PreprocessStrategies =
     {
@@ -894,18 +984,31 @@ public class ImageImportService : IImageImportService
     {
         if (cellWords.Count == 0) return new List<FoodItem>();
 
-        // Group words into lines by Y position.
-        // Sort by Y first, then detect line breaks by looking at gaps between consecutive words.
+        // Strategy 1: Use Tesseract's own line grouping (BlockNum + LineNum)
+        // This is more reliable than Y-gap detection because Tesseract already
+        // determined which words belong to the same text line.
+        var lineGroups = cellWords
+            .GroupBy(w => (w.BlockNum, w.ParNum, w.LineNum))
+            .OrderBy(g => g.Min(w => w.Top))
+            .Select(g => string.Join(" ", g.OrderBy(w => w.Left).Select(w => w.Text.Trim())))
+            .ToList();
+
+        // If Tesseract line grouping gives multiple lines, use it
+        if (lineGroups.Count > 1)
+        {
+            var textLines = BuildTextLines(lineGroups);
+            var items = new List<FoodItem>();
+            foreach (var line in textLines)
+            {
+                var food = ParseFoodLine(line);
+                if (food != null && food.Name.Length >= 2)
+                    items.Add(food);
+            }
+            if (items.Count > 1) return items;
+        }
+
+        // Strategy 2: Y-gap based line detection (fallback)
         var sorted = cellWords.OrderBy(w => w.CenterY).ThenBy(w => w.Left).ToList();
-
-        // Calculate gaps between consecutive words (by Y)
-        var yGaps = new List<double>();
-        for (int i = 1; i < sorted.Count; i++)
-            yGaps.Add(sorted[i].CenterY - sorted[i - 1].CenterY);
-
-        // Find the threshold: words on the same text line have very small Y gaps (~0-5px).
-        // Words on different food lines have larger gaps (20-100px+).
-        // Use half the average word height as minimum line break threshold.
         var avgHeight = sorted.Average(w => (double)w.Height);
         var lineBreakThreshold = Math.Max(avgHeight * 0.4, 8);
 
@@ -927,15 +1030,70 @@ public class ImageImportService : IImageImportService
         }
         lines.Add(currentLine);
 
-        var textLines = BuildTextLines(lines
-            .Select(l => string.Join(" ", l.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
-
-        var items = new List<FoodItem>();
-        foreach (var line in textLines)
+        // Strategy 3: If Y-gap gives only 1 line but we have many words,
+        // try splitting by colon-quantity patterns (e.g., "300g" followed by uppercase word)
+        if (lines.Count <= 1 && cellWords.Count > 6)
         {
-            var food = ParseFoodLine(line);
-            if (food != null && food.Name.Length >= 2)
-                items.Add(food);
+            var allText = string.Join(" ", sorted.OrderBy(w => w.Left).Select(w => w.Text.Trim()));
+            var splitItems = SplitConcatenatedFoodLine(allText);
+            if (splitItems.Count > 1) return splitItems;
+        }
+
+        {
+            var textLines2 = BuildTextLines(lines
+                .Select(l => string.Join(" ", l.OrderBy(w => w.Left).Select(w => w.Text.Trim()))));
+
+            var items2 = new List<FoodItem>();
+            foreach (var line in textLines2)
+            {
+                var food = ParseFoodLine(line);
+                if (food != null && food.Name.Length >= 2)
+                    items2.Add(food);
+            }
+            return items2;
+        }
+    }
+
+    /// <summary>
+    /// When all food items are on one line, try to split by quantity patterns.
+    /// E.g., "Bebida de soja: 300g proteina de suero: 40g Canela: 3g" →
+    /// splits at each "quantity + next word that starts a new food name"
+    /// </summary>
+    private static List<FoodItem> SplitConcatenatedFoodLine(string text)
+    {
+        text = FixOcrErrors(text);
+        var items = new List<FoodItem>();
+
+        // Split by colon patterns: find "word: qty" segments
+        // Pattern: split before a word that is followed by ":" and preceded by a quantity-like token
+        var segments = Regex.Split(text,
+            @"(?<=\d+\s*[gGkK](?:g|r)?\b|\d+\s*[mM][lL]\b|\(\d[^)]*\))\s+(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])");
+
+        if (segments.Length > 1)
+        {
+            foreach (var seg in segments)
+            {
+                var food = ParseFoodLine(seg.Trim());
+                if (food != null && food.Name.Length >= 2)
+                    items.Add(food);
+            }
+        }
+
+        // Also try splitting on parenthesized groups followed by new word
+        if (items.Count <= 1)
+        {
+            items.Clear();
+            var segments2 = Regex.Split(text,
+                @"(?<=\))\s+(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])");
+            if (segments2.Length > 1)
+            {
+                foreach (var seg in segments2)
+                {
+                    var food = ParseFoodLine(seg.Trim());
+                    if (food != null && food.Name.Length >= 2)
+                        items.Add(food);
+                }
+            }
         }
 
         return items;

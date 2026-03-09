@@ -117,6 +117,17 @@ public class DietasController : ControllerBase
             new DietaResumenDto(dieta.Id, dieta.Nombre, dieta.Descripcion, dieta.FechaImportacion, dieta.ArchivoOriginal));
     }
 
+    [HttpPost("dietas/diagnostico-imagen")]
+    public async Task<ActionResult<object>> DiagnosticoImagen(IFormFile archivo)
+    {
+        if (archivo == null || archivo.Length == 0)
+            return BadRequest("Debe subir una imagen");
+
+        using var stream = archivo.OpenReadStream();
+        var result = await _imageImport.DiagnosticAnalyzeAsync(stream, archivo.ContentType);
+        return Ok(result);
+    }
+
     [HttpDelete("dietas/{id}")]
     public async Task<IActionResult> Eliminar(int id)
     {
