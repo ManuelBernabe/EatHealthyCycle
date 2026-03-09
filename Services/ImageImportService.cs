@@ -881,8 +881,15 @@ public class ImageImportService : IImageImportService
         var headerThreshold = imageHeight * 0.12;
         var mealBands = colorBands.Where(b => b.top > headerThreshold).OrderBy(b => b.top).ToList();
 
-        // Also skip the very first band if it's clearly a top navigation/header bar (Y < 5% of image)
-        // Keep only bands that look like meal headers (reasonable Y range)
+        // Meal header bars are thin (typically 10-35px tall).
+        // If bands are thick (>50px), they're content cell backgrounds, not headers.
+        var avgBandHeight = mealBands.Count > 0 ? mealBands.Average(b => b.bottom - b.top) : 0;
+        if (avgBandHeight > 50)
+        {
+            _logger.LogInformation("Color bands avg height {Avg:F0}px too thick (content areas, not headers), skipping",
+                avgBandHeight);
+            return new List<MealRow>();
+        }
 
         if (mealBands.Count < 4)
         {
