@@ -15,6 +15,7 @@ QuestPDF.Settings.License = LicenseType.Community;
 
 // Database — use persistent volume on Railway if available
 var dataDir = Environment.GetEnvironmentVariable("DATA_DIR");
+if (dataDir != null) Directory.CreateDirectory(dataDir);
 var dbPath = dataDir != null ? Path.Combine(dataDir, "eathealthycycle.db") : "eathealthycycle.db";
 var connectionString = $"Data Source={dbPath}";
 builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlite(connectionString));
