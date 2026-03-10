@@ -980,6 +980,7 @@ const App = {
             const badge = document.getElementById('env-badge');
             if (badge && data.env) {
                 badge.textContent = data.env === 'develop' ? '(D)' : '(P)';
+                badge.style.cssText = 'font-size:0.55em;vertical-align:middle;opacity:0.75;font-weight:normal;';
             }
         } catch { /* ignore */ }
     },
