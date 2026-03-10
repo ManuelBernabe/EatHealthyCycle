@@ -13,9 +13,10 @@ var builder = WebApplication.CreateBuilder(args);
 // QuestPDF License
 QuestPDF.Settings.License = LicenseType.Community;
 
-// Database
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+// Database — use persistent volume on Railway if available
+var dbPath = Environment.GetEnvironmentVariable("DB_PATH") ?? "eathealthycycle.db";
+var connectionString = $"Data Source={dbPath}";
+builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlite(connectionString));
 
 // JWT Settings
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>() ?? new JwtSettings

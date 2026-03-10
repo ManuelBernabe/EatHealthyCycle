@@ -977,6 +977,10 @@ const App = {
                 this.showUpdatePopup(data.version);
             }
             localStorage.setItem('appVersion', data.version);
+            const badge = document.getElementById('env-badge');
+            if (badge && data.env) {
+                badge.textContent = data.env === 'develop' ? '(D)' : '(P)';
+            }
         } catch { /* ignore */ }
     },
 
@@ -1013,12 +1017,4 @@ function getNextMonday() {
     return d.toISOString().split('T')[0];
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    const badge = document.getElementById('env-badge');
-    if (badge) {
-        const isDev = ['localhost', '127.0.0.1'].includes(location.hostname);
-        badge.textContent = isDev ? '(D)' : '(P)';
-        badge.style.cssText = `font-size:0.55em;vertical-align:middle;opacity:0.75;font-weight:normal;`;
-    }
-    App.init();
-});
+document.addEventListener('DOMContentLoaded', () => App.init());

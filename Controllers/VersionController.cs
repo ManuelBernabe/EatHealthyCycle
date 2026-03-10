@@ -12,6 +12,7 @@ public class VersionController : ControllerBase
     [HttpGet("version")]
     public IActionResult GetVersion()
     {
-        return Ok(new { version = AppVersion });
+        var env = Environment.GetEnvironmentVariable("APP_ENV") ?? "production";
+        return Ok(new { version = AppVersion, env });
     }
 }
