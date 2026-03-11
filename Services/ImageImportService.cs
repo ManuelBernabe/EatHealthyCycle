@@ -810,13 +810,21 @@ public class ImageImportService : IImageImportService
 
         columns = columns.OrderBy(c => c.HeaderCenterX).ToList();
 
-        // Calculate column boundaries
+        // Calculate column boundaries.
+        // ContentLeft uses the current column's HeaderLeft (left edge of the header text) so that
+        // body text starting at the left edge of the cell is not cut off by a midpoint calculation.
+        // A small margin (half the average inter-column gap) is subtracted to also capture words
+        // that may be slightly to the left of the header start.
         var imageWidth = words.Max(w => w.Right) + 10;
+        var avgColGap = columns.Count > 1
+            ? (columns[^1].HeaderCenterX - columns[0].HeaderCenterX) / (columns.Count - 1)
+            : imageWidth / (double)columns.Count;
         for (int i = 0; i < columns.Count; i++)
         {
+            var headerLeft = columns[i].HeaderLeft > 0 ? columns[i].HeaderLeft : (int)columns[i].HeaderCenterX;
             columns[i].ContentLeft = i == 0
                 ? 0
-                : (columns[i - 1].HeaderCenterX + columns[i].HeaderCenterX) / 2;
+                : Math.Max(0, headerLeft - avgColGap * 0.15);
 
             columns[i].ContentRight = i == columns.Count - 1
                 ? imageWidth
@@ -1415,6 +1423,7 @@ public class ImageImportService : IImageImportService
                 if (food != null && food.Name.Length >= 2)
                     items.Add(food);
             }
+            items = MergeQuantityOnlyItems(items);
             if (items.Count > 1) return items;
         }
 
@@ -1461,8 +1470,33 @@ public class ImageImportService : IImageImportService
                 if (food != null && food.Name.Length >= 2)
                     items2.Add(food);
             }
-            return items2;
+            return MergeQuantityOnlyItems(items2);
         }
+    }
+
+    /// <summary>
+    /// Merges items whose "name" is actually a quantity (starts with a digit) into the
+    /// previous item's Quantity field. E.g., Item("BEBIDA DE SOJA", null) + Item("300G (1 TAZA)", null)
+    /// → Item("BEBIDA DE SOJA", "300G (1 TAZA)").
+    /// </summary>
+    private static List<FoodItem> MergeQuantityOnlyItems(List<FoodItem> items)
+    {
+        if (items.Count <= 1) return items;
+        var result = new List<FoodItem>();
+        foreach (var item in items)
+        {
+            // A quantity-only item has a name that starts with a digit
+            var isQtyOnly = item.Quantity == null && item.Name.Length > 0 && char.IsDigit(item.Name[0]);
+            if (isQtyOnly && result.Count > 0 && result[^1].Quantity == null)
+            {
+                result[^1] = new FoodItem { Name = result[^1].Name, Quantity = item.Name };
+            }
+            else
+            {
+                result.Add(item);
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -1518,7 +1552,7 @@ public class ImageImportService : IImageImportService
             var lineText = CleanLine(raw);
             if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
 
-            if (textLines.Count > 0 && EndsWithPreposition(textLines[^1]))
+            if (textLines.Count > 0 && (EndsWithPreposition(textLines[^1]) || textLines[^1].TrimEnd().EndsWith(':')))
             {
                 textLines[^1] = textLines[^1] + " " + lineText;
             }
