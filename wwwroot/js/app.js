@@ -5,6 +5,11 @@ const App = {
 
     init() {
         API.init();
+        EcOffline.initListeners();
+        window.addEventListener('ec-synced', (e) => {
+            EcOffline.showSyncToast('Sincronizado ✓');
+            if (this.currentPage === 'plan') this.loadPlan();
+        });
         if (API.isLoggedIn()) {
             if (!API.user) {
                 // Token present but user data missing — force clean re-login
@@ -395,6 +400,7 @@ const App = {
     },
 
     async toggleMeal(id, el) {
+        const newState = !el.classList.contains('checked');
         try {
             const res = await API.toggleComida(id);
             el.classList.toggle('checked');
@@ -407,7 +413,23 @@ const App = {
                     if (comida) { comida.completada = res.completada; break; }
                 }
             }
-        } catch (e) { this.toast(e.message, 'error'); }
+        } catch (e) {
+            if (!navigator.onLine || e.message === 'offline') {
+                // Optimistic update + queue for sync
+                EcOffline.enqueue('PUT', `/api/plancomidas/${id}/completar`, null);
+                el.classList.toggle('checked');
+                el.innerHTML = newState ? '✓' : '';
+                el.nextElementSibling.classList.toggle('completed');
+                if (this.currentPlan) {
+                    for (const dia of this.currentPlan.dias) {
+                        const comida = dia.comidas.find(c => c.id === id);
+                        if (comida) { comida.completada = newState; break; }
+                    }
+                }
+            } else {
+                this.toast(e.message, 'error');
+            }
+        }
     },
 
     openAddMealModal(planDiaId) {
@@ -618,12 +640,23 @@ const App = {
     },
 
     async toggleComprado(id, el) {
+        const newState = !el.classList.contains('bought');
         try {
             const res = await API.toggleComprado(id);
             el.classList.toggle('bought');
             el.querySelector('.meal-check').classList.toggle('checked');
             el.querySelector('.meal-check').innerHTML = res.comprado ? '✓' : '';
-        } catch (e) { this.toast(e.message, 'error'); }
+        } catch (e) {
+            if (!navigator.onLine || e.message === 'offline') {
+                // Optimistic update + queue for sync
+                EcOffline.enqueue('PUT', `/api/lista-compra/${id}`, null);
+                el.classList.toggle('bought');
+                el.querySelector('.meal-check').classList.toggle('checked');
+                el.querySelector('.meal-check').innerHTML = newState ? '✓' : '';
+            } else {
+                this.toast(e.message, 'error');
+            }
+        }
     },
 
     // --- PERFIL ---

@@ -34,7 +34,17 @@ const API = {
         const opts = { method, headers };
         if (body) opts.body = isFormData ? body : JSON.stringify(body);
 
-        let res = await fetch(this.baseUrl + path, opts);
+        let res;
+        try {
+            res = await fetch(this.baseUrl + path, opts);
+        } catch (e) {
+            // Network error (offline) — serve GET from localStorage cache
+            if (method === 'GET' && typeof EcOffline !== 'undefined' && EcOffline.isCacheableGet(path)) {
+                const cached = EcOffline.getCached(path);
+                if (cached !== null) return cached;
+            }
+            throw e;
+        }
 
         // Token expired - try refresh
         if (res.status === 401 && this.token) {
@@ -51,12 +61,25 @@ const API = {
         }
 
         if (!res.ok) {
+            // SW returns 503 {"error":"offline"} when network is down —
+            // try localStorage cache before throwing
+            if (method === 'GET' && res.status === 503 && typeof EcOffline !== 'undefined') {
+                const cached = EcOffline.getCached(path);
+                if (cached !== null) return cached;
+            }
             const err = await res.json().catch(() => ({ error: 'Error del servidor' }));
             throw new Error(err.error || err.title || 'Error');
         }
 
         const text = await res.text();
-        return text ? JSON.parse(text) : null;
+        const data = text ? JSON.parse(text) : null;
+
+        // Cache successful GET responses for offline use
+        if (method === 'GET' && typeof EcOffline !== 'undefined' && EcOffline.isCacheableGet(path)) {
+            EcOffline.setCache(path, data);
+        }
+
+        return data;
     },
 
     async tryRefresh() {
