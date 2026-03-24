@@ -1228,6 +1228,8 @@ const App = {
         recognition.onresult = (e) => {
             input.value = e.results[0][0].transcript;
             resetBtn();
+            // Auto-search after voice input
+            App.mdSearchOFF(mi, fi);
         };
         recognition.onerror = (e) => {
             const msgs = { 'not-allowed': 'Permite el acceso al micrófono', 'no-speech': 'No se detectó voz', 'network': 'Error de red' };
