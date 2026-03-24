@@ -16,17 +16,39 @@ public class OpenFoodFactsService : IOpenFoodFactsService
         _logger = logger;
     }
 
+    private static readonly string[] BaseUrls = new[]
+    {
+        "https://world.openfoodfacts.net",
+        "https://world.openfoodfacts.org"
+    };
+
     public async Task<List<AlimentoBuscadoDto>> BuscarAlimentosAsync(string termino)
     {
         var client = _httpClientFactory.CreateClient();
         client.DefaultRequestHeaders.UserAgent.ParseAdd("EatHealthyCycle/1.0 (contact@eathealthycycle.app)");
+        client.Timeout = TimeSpan.FromSeconds(10);
 
-        var url = $"https://world.openfoodfacts.org/cgi/search.pl?search_terms={Uri.EscapeDataString(termino)}&json=true&page_size=15&lc=es&fields=product_name,brands,nutriments";
+        var query = $"/cgi/search.pl?search_terms={Uri.EscapeDataString(termino)}&json=true&page_size=15&lc=es&fields=product_name,brands,nutriments";
+
+        HttpResponseMessage? response = null;
+        foreach (var baseUrl in BaseUrls)
+        {
+            try
+            {
+                response = await client.GetAsync(baseUrl + query);
+                if (response.IsSuccessStatusCode) break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "OFF: fallo en {BaseUrl}, probando siguiente...", baseUrl);
+            }
+        }
+
+        if (response == null || !response.IsSuccessStatusCode)
+            return new List<AlimentoBuscadoDto>();
 
         try
         {
-            var response = await client.GetAsync(url);
-            response.EnsureSuccessStatusCode();
 
             using var stream = await response.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
