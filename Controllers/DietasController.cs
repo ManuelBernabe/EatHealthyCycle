@@ -151,6 +151,14 @@ public class DietasController : ControllerBase
             .FirstOrDefaultAsync(d => d.Id == id);
         if (dieta == null) return NotFound();
 
+        // Unlink PlanComidas that reference these Comidas (nullable FK)
+        var comidaIds = dieta.Dias.SelectMany(d => d.Comidas).Select(c => c.Id).ToList();
+        if (comidaIds.Count > 0)
+        {
+            var linkedPlanComidas = await _db.PlanComidas.Where(pc => pc.ComidaId != null && comidaIds.Contains(pc.ComidaId.Value)).ToListAsync();
+            foreach (var pc in linkedPlanComidas) pc.ComidaId = null;
+        }
+
         // Remove old hierarchy
         foreach (var dia in dieta.Dias)
         {

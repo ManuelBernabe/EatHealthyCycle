@@ -1461,7 +1461,8 @@ const App = {
                 alimentos: c.alimentos.map(a => ({ nombre: a.nombre, cantidad: a.cantidad, categoria: a.categoria, kcal: a.kcal }))
             }));
             if (comidas.length === 0) continue;
-            dias.push({ diaSemana: parseInt(day), nota: null, comidas });
+            const dayNumToName = { 0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
+            dias.push({ diaSemana: dayNumToName[parseInt(day)], nota: null, comidas });
         }
 
         if (dias.length === 0) return this.toast('Añade al menos una comida con alimentos', 'error');
