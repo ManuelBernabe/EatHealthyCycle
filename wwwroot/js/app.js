@@ -198,21 +198,34 @@ const App = {
             const dieta = await API.obtenerDieta(id);
             const dayNames = { 0: 'Domingo', 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado',
                 Sunday: 'Domingo', Monday: 'Lunes', Tuesday: 'Martes', Wednesday: 'Miércoles', Thursday: 'Jueves', Friday: 'Viernes', Saturday: 'Sábado' };
-            el.innerHTML = dieta.dias.map(dia => `
-                <div style="margin:6px 0;">
-                    <div style="font-weight:600;font-size:13px;color:var(--primary-dark);margin-bottom:4px;">${dayNames[dia.diaSemana] || 'Día ' + dia.diaSemana}</div>
-                    ${dia.comidas.map(c => `
-                        <div style="margin-left:8px;margin-bottom:4px;">
-                            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);">${c.tipo === 'MediaManana' ? 'Media Mañana' : c.tipo === 'PreDesayuno' ? 'Pre Desayuno' : c.tipo}</div>
-                            ${c.alimentos.map(a => `
-                                <div style="font-size:12px;margin-left:8px;padding:2px 0;">
-                                    ${App.escHtml(a.nombre)}${a.cantidad ? ' <span style="color:var(--text-secondary);">(' + App.escHtml(a.cantidad) + ')</span>' : ''}${a.kcal != null ? ' <span style="color:var(--accent);font-weight:600;">' + a.kcal + ' kcal</span>' : ''}
-                                </div>
-                            `).join('')}
+            el.innerHTML = dieta.dias.map(dia => {
+                let dayTotal = 0;
+                const mealHtml = dia.comidas.map(c => {
+                    let mealTotal = 0;
+                    const foodsHtml = c.alimentos.map(a => {
+                        if (a.kcal != null) mealTotal += a.kcal;
+                        return `<div style="font-size:12px;margin-left:8px;padding:2px 0;">
+                            ${App.escHtml(a.nombre)}${a.cantidad ? ' <span style="color:var(--text-secondary);">(' + App.escHtml(a.cantidad) + ')</span>' : ''}${a.kcal != null ? ' <span style="color:var(--accent);font-weight:600;">' + a.kcal + ' kcal</span>' : ''}
+                        </div>`;
+                    }).join('');
+                    dayTotal += mealTotal;
+                    const tipoLabel = c.tipo === 'MediaManana' ? 'Media Mañana' : c.tipo === 'PreDesayuno' ? 'Pre Desayuno' : c.tipo;
+                    return `<div style="margin-left:8px;margin-bottom:6px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);">${tipoLabel}</div>
+                            ${mealTotal > 0 ? '<span style="font-size:11px;font-weight:600;color:var(--accent);">' + mealTotal + ' kcal</span>' : ''}
                         </div>
-                    `).join('')}
-                </div>
-            `).join('');
+                        ${foodsHtml}
+                    </div>`;
+                }).join('');
+                return `<div style="margin:8px 0;padding:8px;background:#fafafa;border-radius:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                        <div style="font-weight:600;font-size:13px;color:var(--primary-dark);">${dayNames[dia.diaSemana] || 'Día ' + dia.diaSemana}</div>
+                        ${dayTotal > 0 ? '<span style="font-size:13px;font-weight:700;color:var(--accent);">' + dayTotal + ' kcal</span>' : ''}
+                    </div>
+                    ${mealHtml}
+                </div>`;
+            }).join('');
         } catch (e) { el.innerHTML = `<p style="color:var(--danger);font-size:12px;">${e.message}</p>`; }
     },
 
