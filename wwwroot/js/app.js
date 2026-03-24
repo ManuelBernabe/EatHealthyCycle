@@ -1187,6 +1187,7 @@ const App = {
         return `<div class="md-food-row" style="margin:6px 0;padding:6px;background:#fafafa;border-radius:8px;border:1px solid #e8e8e8;">
             <div style="display:flex;gap:4px;align-items:center;">
                 <input class="md-food-nombre" type="text" placeholder="Nombre del alimento" value="${this.escHtml(f.nombre || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+                <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#607D8B;color:white;" onclick="App.mdVoiceInput(${mi},${fi})" title="Dictado por voz">🎤</button>
                 <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;" onclick="App.mdSearchOFF(${mi},${fi})">🔍</button>
                 <button class="btn btn-danger btn-sm" style="padding:4px 8px;" onclick="App.mdRemoveFood(${mi},${fi})">✕</button>
             </div>
@@ -1202,6 +1203,42 @@ const App = {
     },
 
     escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
+
+    mdVoiceInput(mi, fi) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return this.toast('Tu navegador no soporta dictado por voz', 'error');
+
+        const blocks = document.getElementById('md-meals').querySelectorAll('.md-meal-block');
+        const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
+        const input = row.querySelector('.md-food-nombre');
+        const btn = row.querySelector('[onclick*="mdVoiceInput"]');
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'es-ES';
+        recognition.continuous = false;
+        recognition.interimResults = false;
+
+        btn.style.background = '#f44336';
+        btn.textContent = '...';
+
+        recognition.onresult = (e) => {
+            const text = e.results[0][0].transcript;
+            input.value = text;
+            btn.style.background = '#607D8B';
+            btn.textContent = '🎤';
+        };
+        recognition.onerror = (e) => {
+            this.toast('Error de voz: ' + e.error, 'error');
+            btn.style.background = '#607D8B';
+            btn.textContent = '🎤';
+        };
+        recognition.onend = () => {
+            btn.style.background = '#607D8B';
+            btn.textContent = '🎤';
+        };
+
+        recognition.start();
+    },
 
     mdUpdateTotal() {
         let total = 0;

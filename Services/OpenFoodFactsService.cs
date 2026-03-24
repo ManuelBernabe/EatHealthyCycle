@@ -25,10 +25,6 @@ public class OpenFoodFactsService : IOpenFoodFactsService
 
     public async Task<List<AlimentoBuscadoDto>> BuscarAlimentosAsync(string termino)
     {
-        var client = _httpClientFactory.CreateClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("EatHealthyCycle/1.0 (contact@eathealthycycle.app)");
-        client.Timeout = TimeSpan.FromSeconds(10);
-
         var query = $"/cgi/search.pl?search_terms={Uri.EscapeDataString(termino)}&json=true&page_size=15&lc=es&fields=product_name,product_name_es,brands,nutriments";
 
         HttpResponseMessage? response = null;
@@ -36,8 +32,16 @@ public class OpenFoodFactsService : IOpenFoodFactsService
         {
             try
             {
+                var client = _httpClientFactory.CreateClient();
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("EatHealthyCycle/1.0 (contact@eathealthycycle.app)");
+                client.Timeout = TimeSpan.FromSeconds(8);
                 response = await client.GetAsync(baseUrl + query);
-                if (response.IsSuccessStatusCode) break;
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("OFF: OK desde {BaseUrl} para '{Termino}'", baseUrl, termino);
+                    break;
+                }
+                _logger.LogWarning("OFF: {Status} desde {BaseUrl}", response.StatusCode, baseUrl);
             }
             catch (Exception ex)
             {
@@ -46,11 +50,13 @@ public class OpenFoodFactsService : IOpenFoodFactsService
         }
 
         if (response == null || !response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("OFF: todos los dominios fallaron para '{Termino}'", termino);
             return new List<AlimentoBuscadoDto>();
+        }
 
         try
         {
-
             using var stream = await response.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
 
