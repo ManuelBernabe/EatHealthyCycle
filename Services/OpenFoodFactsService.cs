@@ -18,6 +18,7 @@ public class OpenFoodFactsService : IOpenFoodFactsService
 
     private static readonly string[] BaseUrls = new[]
     {
+        "https://es.openfoodfacts.net",
         "https://world.openfoodfacts.net",
         "https://world.openfoodfacts.org"
     };
@@ -28,7 +29,7 @@ public class OpenFoodFactsService : IOpenFoodFactsService
         client.DefaultRequestHeaders.UserAgent.ParseAdd("EatHealthyCycle/1.0 (contact@eathealthycycle.app)");
         client.Timeout = TimeSpan.FromSeconds(10);
 
-        var query = $"/cgi/search.pl?search_terms={Uri.EscapeDataString(termino)}&json=true&page_size=15&lc=es&fields=product_name,brands,nutriments";
+        var query = $"/cgi/search.pl?search_terms={Uri.EscapeDataString(termino)}&json=true&page_size=15&lc=es&fields=product_name,product_name_es,brands,nutriments";
 
         HttpResponseMessage? response = null;
         foreach (var baseUrl in BaseUrls)
@@ -59,7 +60,8 @@ public class OpenFoodFactsService : IOpenFoodFactsService
 
             foreach (var product in products.EnumerateArray())
             {
-                var nombre = GetStringProp(product, "product_name");
+                var nombre = GetStringProp(product, "product_name_es")
+                          ?? GetStringProp(product, "product_name");
                 if (string.IsNullOrWhiteSpace(nombre)) continue;
 
                 var marca = GetStringProp(product, "brands");
