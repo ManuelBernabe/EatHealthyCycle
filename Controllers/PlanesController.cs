@@ -129,6 +129,7 @@ public class PlanesController : ControllerBase
 
         return new PlanSemanalDetalleDto(
             plan.Id,
+            plan.DietaId,
             plan.Dieta?.Nombre ?? "Plan manual",
             plan.FechaInicio,
             plan.FechaFin,

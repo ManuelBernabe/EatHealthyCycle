@@ -10,6 +10,7 @@ public record PlanSemanalResumenDto(int Id, int? DietaId, string DietaNombre, Da
 
 public record PlanSemanalDetalleDto(
     int Id,
+    int? DietaId,
     string DietaNombre,
     DateTime FechaInicio,
     DateTime FechaFin,
