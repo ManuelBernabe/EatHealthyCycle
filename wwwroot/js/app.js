@@ -439,6 +439,11 @@ const App = {
             </div>`;
         }
 
+        // Save scroll positions before re-render
+        const oldTabs = document.querySelector('.day-tabs');
+        const tabsScroll = oldTabs ? oldTabs.scrollLeft : 0;
+        const pageScroll = window.scrollY;
+
         document.getElementById('plan-content').innerHTML = `
             ${planSelectorHtml}
             <div class="day-tabs">${tabsHtml}</div>
@@ -451,11 +456,12 @@ const App = {
                 <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
             </div>
         `;
-        if (!noScroll) {
-            requestAnimationFrame(() => {
-                const activeTab = document.querySelector('.day-tab.active');
-                if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-            });
+
+        // Restore scroll positions
+        if (noScroll) {
+            const newTabs = document.querySelector('.day-tabs');
+            if (newTabs) newTabs.scrollLeft = tabsScroll;
+            window.scrollTo(0, pageScroll);
         }
     },
 
