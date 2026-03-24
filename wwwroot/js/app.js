@@ -369,7 +369,7 @@ const App = {
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
-    renderPlan(plan) {
+    renderPlan(plan, noScroll) {
         const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
         const mealTypes = {
             'PreDesayuno': 'predesayuno',
@@ -451,17 +451,18 @@ const App = {
                 <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
             </div>
         `;
+        if (!noScroll) {
+            requestAnimationFrame(() => {
+                const activeTab = document.querySelector('.day-tab.active');
+                if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            });
+        }
     },
 
     selectDay(index) {
         this.currentDayIndex = index;
         if (this.currentPlan) {
             this.renderPlan(this.currentPlan);
-            // Scroll active tab into view on mobile
-            requestAnimationFrame(() => {
-                const activeTab = document.querySelector('.day-tab.active');
-                if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-            });
         }
     },
 
@@ -485,7 +486,7 @@ const App = {
         }
         if (completadas > 0) {
             this.toast(`${completadas} comidas completadas`);
-            this.renderPlan(plan);
+            this.renderPlan(plan, true);
         }
     },
 
