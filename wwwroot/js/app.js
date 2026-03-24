@@ -443,7 +443,7 @@ const App = {
             ${planSelectorHtml}
             <div class="day-tabs">${tabsHtml}</div>
             <div style="padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="btn btn-sm" style="background:var(--primary);color:white;" onclick="App.completarDia()">✓ Completar día</button>
+                <button class="btn btn-sm" style="background:${dia.comidas.length > 0 && dia.comidas.every(c => c.completada) ? 'var(--accent)' : 'var(--primary)'};color:white;" onclick="App.completarDia()">${dia.comidas.length > 0 && dia.comidas.every(c => c.completada) ? '↩ Descompletar día' : '✓ Completar día'}</button>
                 <button class="btn btn-outline btn-sm" onclick="App.openAddMealModal(${dia.id})">+ Añadir comida</button>
             </div>
             ${mealsHtml}
@@ -471,21 +471,21 @@ const App = {
         if (!plan) return;
         const dia = plan.dias[this.currentDayIndex];
         if (!dia || !dia.comidas || dia.comidas.length === 0) return this.toast('No hay comidas en este día', 'error');
-        const pendientes = dia.comidas.filter(c => !c.completada);
-        if (pendientes.length === 0) return this.toast('Ya están todas completadas');
-        let completadas = 0;
-        for (const c of pendientes) {
+        const todasCompletadas = dia.comidas.every(c => c.completada);
+        const target = todasCompletadas ? dia.comidas : dia.comidas.filter(c => !c.completada);
+        let count = 0;
+        for (const c of target) {
             try {
                 const res = await API.toggleComida(c.id);
                 c.completada = res.completada;
-                completadas++;
+                count++;
             } catch (e) {
-                this.toast('Error al completar: ' + e.message, 'error');
+                this.toast('Error: ' + e.message, 'error');
                 break;
             }
         }
-        if (completadas > 0) {
-            this.toast(`${completadas} comidas completadas`);
+        if (count > 0) {
+            this.toast(todasCompletadas ? `${count} comidas descompletadas` : `${count} comidas completadas`);
             this.renderPlan(plan, true);
         }
     },
