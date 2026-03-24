@@ -1,5 +1,5 @@
-const CACHE = 'eatcycle-v1';
-const API_CACHE = 'eatcycle-api-v1';
+const CACHE = 'eatcycle-v2';
+const API_CACHE = 'eatcycle-api-v2';
 const SHELL = ['/', '/css/app.css', '/js/offline.js', '/js/api.js', '/js/app.js'];
 
 // GET API paths to cache for offline reading
