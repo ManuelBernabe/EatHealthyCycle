@@ -1187,8 +1187,8 @@ const App = {
         return `<div class="md-food-row" style="margin:6px 0;padding:6px;background:#fafafa;border-radius:8px;border:1px solid #e8e8e8;">
             <div style="display:flex;gap:4px;align-items:center;">
                 <input class="md-food-nombre" type="text" placeholder="Nombre del alimento" value="${this.escHtml(f.nombre || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
-                <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#607D8B;color:white;" onclick="App.mdVoiceInput(${mi},${fi})" title="Dictado por voz">🎤</button>
-                <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;" onclick="App.mdSearchOFF(${mi},${fi})">🔍</button>
+                <button class="btn btn-sm md-voice-btn" style="padding:4px 8px;font-size:11px;background:#607D8B;color:white;" onclick="App.mdVoiceInput(${mi},${fi})" title="Dictado por voz">&#x1F3A4;</button>
+                <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;" onclick="App.mdSearchOFF(${mi},${fi})">&#x1F50D;</button>
                 <button class="btn btn-danger btn-sm" style="padding:4px 8px;" onclick="App.mdRemoveFood(${mi},${fi})">✕</button>
             </div>
             <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
@@ -1206,38 +1206,37 @@ const App = {
 
     mdVoiceInput(mi, fi) {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) return this.toast('Tu navegador no soporta dictado por voz', 'error');
+        if (!SpeechRecognition) return this.toast('Dictado por voz no disponible en este navegador', 'error');
 
         const blocks = document.getElementById('md-meals').querySelectorAll('.md-meal-block');
         const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
         const input = row.querySelector('.md-food-nombre');
-        const btn = row.querySelector('[onclick*="mdVoiceInput"]');
+        const btn = row.querySelector('.md-voice-btn');
+        if (!btn) return;
 
         const recognition = new SpeechRecognition();
         recognition.lang = 'es-ES';
         recognition.continuous = false;
         recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        const resetBtn = () => { btn.style.background = '#607D8B'; btn.innerHTML = '&#x1F3A4;'; };
 
         btn.style.background = '#f44336';
-        btn.textContent = '...';
+        btn.innerHTML = '<span style="animation:pulse 1s infinite">...</span>';
 
         recognition.onresult = (e) => {
-            const text = e.results[0][0].transcript;
-            input.value = text;
-            btn.style.background = '#607D8B';
-            btn.textContent = '🎤';
+            input.value = e.results[0][0].transcript;
+            resetBtn();
         };
         recognition.onerror = (e) => {
-            this.toast('Error de voz: ' + e.error, 'error');
-            btn.style.background = '#607D8B';
-            btn.textContent = '🎤';
+            const msgs = { 'not-allowed': 'Permite el acceso al micrófono', 'no-speech': 'No se detectó voz', 'network': 'Error de red' };
+            this.toast(msgs[e.error] || 'Error de voz: ' + e.error, 'error');
+            resetBtn();
         };
-        recognition.onend = () => {
-            btn.style.background = '#607D8B';
-            btn.textContent = '🎤';
-        };
+        recognition.onend = resetBtn;
 
-        recognition.start();
+        try { recognition.start(); } catch (e) { this.toast('No se pudo iniciar el micrófono', 'error'); resetBtn(); }
     },
 
     mdUpdateTotal() {
@@ -1356,22 +1355,25 @@ const App = {
     // Returns { grams: N } for weight-based, { multiplier: N } for units, or null
     mdParseQuantity(text) {
         if (!text) return null;
-        text = text.trim();
-        // "300g", "300 g", "300gr", "150 gramos"
-        const g = text.match(/(\d+(?:[.,]\d+)?)\s*(?:g(?:r(?:amos)?)?)\s*$/i);
+        text = text.trim().toLowerCase();
+        // Weight: "300g", "300 g", "40gr", "150 gramos", "40G"
+        const g = text.match(/(\d+(?:[.,]\d+)?)\s*g(?:r(?:amos)?)?\s*$/);
         if (g) return { grams: parseFloat(g[1].replace(',', '.')) };
-        // "200ml", "200 ml"
-        const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\s*$/i);
+        // Volume: "200ml", "200 ml"
+        const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\s*$/);
         if (ml) return { grams: parseFloat(ml[1].replace(',', '.')) };
-        // "200 kg", "1,5kg"
-        const kg = text.match(/(\d+(?:[.,]\d+)?)\s*kg\s*$/i);
+        // Weight kg: "1,5kg", "2 kg"
+        const kg = text.match(/(\d+(?:[.,]\d+)?)\s*kg\s*$/);
         if (kg) return { grams: parseFloat(kg[1].replace(',', '.')) * 1000 };
-        // "2 latas", "3 unidades", "1 bote", "2 piezas", etc. → multiplier
-        const unit = text.match(/(\d+(?:[.,]\d+)?)\s*(?:latas?|unidad(?:es)?|botes?|piezas?|racion(?:es)?|sobre(?:s)?|cucharada(?:s)?|taza(?:s)?|rebanada(?:s)?|porcion(?:es)?|porciones)\s*$/i);
+        // Units: "2 latas", "3 unidades", "1 bote", etc. → multiplier
+        const unit = text.match(/(\d+(?:[.,]\d+)?)\s*(?:latas?|unidad(?:es)?|botes?|piezas?|racion(?:es)?|porciones?|sobre(?:s)?|cucharada(?:s)?|taza(?:s)?|rebanada(?:s)?)\s*$/);
         if (unit) return { multiplier: parseFloat(unit[1].replace(',', '.')) };
-        // Plain number — treat as multiplier (e.g. "2" = 2 portions of 100g)
+        // Plain number — only if small (≤10), treat as multiplier; larger numbers = grams
         const plain = text.match(/^(\d+(?:[.,]\d+)?)\s*$/);
-        if (plain) return { multiplier: parseFloat(plain[1].replace(',', '.')) };
+        if (plain) {
+            const n = parseFloat(plain[1].replace(',', '.'));
+            return n > 10 ? { grams: n } : { multiplier: n };
+        }
         return null;
     },
 
