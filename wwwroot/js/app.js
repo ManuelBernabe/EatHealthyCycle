@@ -439,11 +439,11 @@ const App = {
         document.getElementById('plan-content').innerHTML = `
             ${planSelectorHtml}
             <div class="day-tabs">${tabsHtml}</div>
-            ${mealsHtml}
-            <div style="padding:12px 16px;display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="btn btn-outline btn-sm" onclick="App.openAddMealModal(${dia.id})">+ Añadir comida</button>
+            <div style="padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="btn btn-sm" style="background:var(--primary);color:white;" onclick="App.completarDia()">✓ Completar día</button>
+                <button class="btn btn-outline btn-sm" onclick="App.openAddMealModal(${dia.id})">+ Añadir comida</button>
             </div>
+            ${mealsHtml}
             <div style="padding:4px 16px 16px;">
                 <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
             </div>
