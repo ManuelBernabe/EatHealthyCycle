@@ -351,6 +351,21 @@ const App = {
         this.loadPlan();
     },
 
+    async repetirPlanSiguiente() {
+        const plan = this.currentPlan;
+        if (!plan || !plan.dietaId) return this.toast('Este plan no tiene dieta asociada', 'error');
+        const fechaFin = new Date(plan.fechaFin);
+        const nextMonday = new Date(fechaFin);
+        nextMonday.setDate(nextMonday.getDate() + 1);
+        const fecha = nextMonday.toISOString().split('T')[0];
+        try {
+            await API.crearPlan(API.user.id, plan.dietaId, fecha);
+            this.toast('Plan creado para la semana siguiente');
+            this.selectedPlanIndex = 0;
+            this.loadPlan();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
     renderPlan(plan) {
         const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
         const mealTypes = {
@@ -403,18 +418,21 @@ const App = {
         // Plan selector
         const planes = this.allPlanes || [];
         let planSelectorHtml = '';
+        const repeatBtn = plan.dietaId ? `<button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.repetirPlanSiguiente()">Repetir →</button>` : '';
         if (planes.length > 1) {
-            planSelectorHtml = `<div style="padding:8px 16px;display:flex;align-items:center;gap:8px;">
-                <select onchange="App.selectPlan(+this.value)" style="flex:1;padding:6px 8px;border-radius:8px;border:1px solid #ddd;">
+            planSelectorHtml = `<div style="padding:8px 16px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <select onchange="App.selectPlan(+this.value)" style="flex:1;padding:6px 8px;border-radius:8px;border:1px solid #ddd;min-width:150px;">
                     ${planes.map((p, i) => `<option value="${i}" ${i === this.selectedPlanIndex ? 'selected' : ''}>
                         ${new Date(p.fechaInicio).toLocaleDateString('es')} - ${new Date(p.fechaFin).toLocaleDateString('es')}
                     </option>`).join('')}
                 </select>
+                ${repeatBtn}
                 <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar</button>
             </div>`;
         } else {
-            planSelectorHtml = `<div style="padding:8px 16px;display:flex;justify-content:flex-end;">
-                <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar plan</button>
+            planSelectorHtml = `<div style="padding:8px 16px;display:flex;justify-content:flex-end;gap:6px;">
+                ${repeatBtn}
+                <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar</button>
             </div>`;
         }
 
