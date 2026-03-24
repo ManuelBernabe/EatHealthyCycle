@@ -178,6 +178,7 @@ const App = {
                     </div>
                     <div style="display:flex;gap:8px;">
                         <button class="btn btn-sm btn-outline" onclick="App.verDietaDetalle(${d.id}, this)">Ver</button>
+                        <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.editarDieta(${d.id})">Editar</button>
                         <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Crear Plan</button>
                         <button class="btn btn-danger btn-sm" onclick="App.borrarDieta(${d.id})">X</button>
                     </div>
@@ -1066,19 +1067,49 @@ const App = {
     // --- MANUAL DIET ---
     mdState: { days: {}, currentDay: 1 },
 
-    openManualDietModal() {
-        document.getElementById('md-nombre').value = '';
-        document.getElementById('md-desc').value = '';
+    openManualDietModal(editId, nombre, desc, daysData) {
+        document.getElementById('md-nombre').value = nombre || '';
+        document.getElementById('md-desc').value = desc || '';
         const dayNames = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
         const dayValues = [1, 2, 3, 4, 5, 6, 0]; // Mon-Sun as DayOfWeek
-        this.mdState = { days: {}, currentDay: 1 };
+        this.mdState = { days: {}, currentDay: 1, editId: editId || null };
         dayValues.forEach(d => { this.mdState.days[d] = { comidas: [] }; });
+        // Load existing data if editing
+        if (daysData) {
+            daysData.forEach(dia => {
+                this.mdState.days[dia.diaSemana] = {
+                    comidas: dia.comidas.map(c => ({
+                        tipo: c.tipo,
+                        orden: c.orden,
+                        nota: c.nota || null,
+                        alimentos: c.alimentos.map(a => ({
+                            nombre: a.nombre,
+                            cantidad: a.cantidad || null,
+                            categoria: a.categoria || null,
+                            kcal: a.kcal != null ? a.kcal : null,
+                            _kcalPor100g: null
+                        }))
+                    }))
+                };
+            });
+        }
         const tabsEl = document.getElementById('md-day-tabs');
         tabsEl.innerHTML = dayValues.map((d, i) =>
             `<button class="btn btn-sm ${d === 1 ? 'btn-primary' : 'btn-outline'}" data-md-day="${d}" onclick="App.mdSelectDay(${d})" style="min-width:36px;padding:6px 8px;">${dayNames[i]}</button>`
         ).join('');
+        // Update modal title
+        document.querySelector('#modal-dieta-manual h3').textContent = editId ? 'Editar Dieta' : 'Crear Dieta Manual';
         this.mdRenderMeals();
         this.openModal('modal-dieta-manual');
+    },
+
+    async editarDieta(id) {
+        try {
+            const dieta = await API.obtenerDieta(id);
+            this.openManualDietModal(id, dieta.nombre, dieta.descripcion, dieta.dias);
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
     },
 
     mdSelectDay(day) {
@@ -1304,13 +1335,20 @@ const App = {
 
         if (dias.length === 0) return this.toast('Añade al menos una comida con alimentos', 'error');
 
+        const payload = {
+            nombre,
+            descripcion: document.getElementById('md-desc').value.trim() || null,
+            dias
+        };
+
         try {
-            await API.crearDietaManual(API.user.id, {
-                nombre,
-                descripcion: document.getElementById('md-desc').value.trim() || null,
-                dias
-            });
-            this.toast('Dieta creada correctamente');
+            if (this.mdState.editId) {
+                await API.actualizarDietaCompleta(this.mdState.editId, payload);
+                this.toast('Dieta actualizada correctamente');
+            } else {
+                await API.crearDietaManual(API.user.id, payload);
+                this.toast('Dieta creada correctamente');
+            }
             this.closeModal('modal-dieta-manual');
             this.loadDashboard();
         } catch (e) {

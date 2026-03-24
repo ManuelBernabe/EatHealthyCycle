@@ -141,6 +141,53 @@ public class DietasController : ControllerBase
         return NoContent();
     }
 
+    // --- Actualización completa de dieta ---
+
+    [HttpPut("dietas/{id}/completa")]
+    public async Task<IActionResult> ActualizarCompleta(int id, CrearDietaManualDto dto)
+    {
+        var dieta = await _db.Dietas
+            .Include(d => d.Dias).ThenInclude(dd => dd.Comidas).ThenInclude(c => c.Alimentos)
+            .FirstOrDefaultAsync(d => d.Id == id);
+        if (dieta == null) return NotFound();
+
+        // Remove old hierarchy
+        foreach (var dia in dieta.Dias)
+        {
+            foreach (var comida in dia.Comidas)
+                _db.Alimentos.RemoveRange(comida.Alimentos);
+            _db.Comidas.RemoveRange(dia.Comidas);
+        }
+        _db.DietaDias.RemoveRange(dieta.Dias);
+
+        // Update metadata
+        dieta.Nombre = dto.Nombre;
+        dieta.Descripcion = dto.Descripcion;
+
+        // Rebuild hierarchy
+        dieta.Dias = dto.Dias.Select(d => new Models.DietaDia
+        {
+            DiaSemana = d.DiaSemana,
+            Nota = d.Nota,
+            Comidas = d.Comidas.Select(c => new Models.Comida
+            {
+                Tipo = c.Tipo,
+                Orden = c.Orden,
+                Nota = c.Nota,
+                Alimentos = c.Alimentos.Select(a => new Models.Alimento
+                {
+                    Nombre = a.Nombre,
+                    Cantidad = a.Cantidad,
+                    Categoria = a.Categoria,
+                    Kcal = a.Kcal
+                }).ToList()
+            }).ToList()
+        }).ToList();
+
+        await _db.SaveChangesAsync();
+        return NoContent();
+    }
+
     // --- Creación manual de dietas ---
 
     [HttpPost("usuarios/{usuarioId}/dietas/manual")]

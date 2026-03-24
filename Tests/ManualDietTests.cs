@@ -483,6 +483,75 @@ public class DietasControllerManualTests : IDisposable
         Assert.Equal(130, alimentos[0].Kcal);
         Assert.Null(alimentos[1].Kcal);
     }
+    [Fact]
+    public async Task ActualizarCompleta_ReplacesFullHierarchy()
+    {
+        // Create initial diet
+        var createDto = new CrearDietaManualDto("Original", "Desc", new List<CrearDietaDiaDto>
+        {
+            new(DayOfWeek.Monday, null, new List<CrearComidaDto>
+            {
+                new(TipoComida.Desayuno, 0, null, new List<CrearAlimentoDto>
+                {
+                    new("Pan", "50g", null, 130)
+                })
+            })
+        });
+        var createResult = await _controller.CrearManual(1, createDto);
+        var created = Assert.IsType<CreatedAtActionResult>(createResult.Result);
+        var resumen = Assert.IsType<DietaResumenDto>(created.Value);
+        var dietaId = resumen.Id;
+
+        // Update with completely different data
+        var updateDto = new CrearDietaManualDto("Actualizada", "Nueva desc", new List<CrearDietaDiaDto>
+        {
+            new(DayOfWeek.Tuesday, "Martes", new List<CrearComidaDto>
+            {
+                new(TipoComida.Almuerzo, 0, null, new List<CrearAlimentoDto>
+                {
+                    new("Pollo", "200g", "Proteínas", 220),
+                    new("Arroz", "150g", "Cereales", 180)
+                })
+            }),
+            new(DayOfWeek.Wednesday, null, new List<CrearComidaDto>
+            {
+                new(TipoComida.Cena, 0, null, new List<CrearAlimentoDto>
+                {
+                    new("Ensalada", "200g", null, 60)
+                })
+            })
+        });
+
+        var result = await _controller.ActualizarCompleta(dietaId, updateDto);
+        Assert.IsType<NoContentResult>(result);
+
+        // Verify new hierarchy
+        var dieta = await _db.Dietas
+            .Include(d => d.Dias).ThenInclude(dd => dd.Comidas).ThenInclude(c => c.Alimentos)
+            .FirstAsync(d => d.Id == dietaId);
+
+        Assert.Equal("Actualizada", dieta.Nombre);
+        Assert.Equal("Nueva desc", dieta.Descripcion);
+        Assert.Equal(2, dieta.Dias.Count);
+
+        // Monday should be gone, Tuesday and Wednesday present
+        Assert.DoesNotContain(dieta.Dias, d => d.DiaSemana == DayOfWeek.Monday);
+        var tuesday = dieta.Dias.First(d => d.DiaSemana == DayOfWeek.Tuesday);
+        Assert.Equal(2, tuesday.Comidas[0].Alimentos.Count);
+        Assert.Equal("Pollo", tuesday.Comidas[0].Alimentos[0].Nombre);
+        Assert.Equal(220, tuesday.Comidas[0].Alimentos[0].Kcal);
+
+        // Old alimentos should be deleted
+        Assert.Equal(3, await _db.Alimentos.CountAsync());
+    }
+
+    [Fact]
+    public async Task ActualizarCompleta_NotFound()
+    {
+        var dto = new CrearDietaManualDto("Test", null, new List<CrearDietaDiaDto>());
+        var result = await _controller.ActualizarCompleta(999, dto);
+        Assert.IsType<NotFoundResult>(result);
+    }
 }
 
 // ══════════════════════════════════════════════════════

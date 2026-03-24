@@ -110,6 +110,7 @@ const API = {
     obtenerDieta: (id) => API.request('GET', `/api/dietas/${id}`),
     eliminarDieta: (id) => API.request('DELETE', `/api/dietas/${id}`),
     crearDietaManual: (usuarioId, data) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/manual`, data),
+    actualizarDietaCompleta: (id, data) => API.request('PUT', `/api/dietas/${id}/completa`, data),
 
     // Alimentos
     buscarAlimentos: (q) => API.request('GET', `/api/alimentos/buscar?q=${encodeURIComponent(q)}`),
