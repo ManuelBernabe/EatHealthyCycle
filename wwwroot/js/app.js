@@ -440,8 +440,9 @@ const App = {
             ${planSelectorHtml}
             <div class="day-tabs">${tabsHtml}</div>
             ${mealsHtml}
-            <div style="padding:12px 16px;">
+            <div style="padding:12px 16px;display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="btn btn-outline btn-sm" onclick="App.openAddMealModal(${dia.id})">+ Añadir comida</button>
+                <button class="btn btn-sm" style="background:var(--primary);color:white;" onclick="App.completarDia()">✓ Completar día</button>
             </div>
             <div style="padding:4px 16px 16px;">
                 <a href="/api/planes/${plan.id}/pdf" target="_blank" class="btn btn-accent">Descargar PDF</a>
@@ -459,6 +460,22 @@ const App = {
                 if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
             });
         }
+    },
+
+    async completarDia() {
+        const plan = this.currentPlan;
+        if (!plan) return;
+        const dia = plan.dias[this.currentDayIndex];
+        const pendientes = dia.comidas.filter(c => !c.completada);
+        if (pendientes.length === 0) return this.toast('Ya están todas completadas');
+        try {
+            for (const c of pendientes) {
+                await API.toggleComida(c.id);
+                c.completada = true;
+            }
+            this.toast(`${pendientes.length} comidas completadas`);
+            this.renderPlan(plan);
+        } catch (e) { this.toast(e.message, 'error'); }
     },
 
     async toggleMeal(id, el) {
