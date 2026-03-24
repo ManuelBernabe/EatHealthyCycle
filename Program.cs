@@ -70,6 +70,7 @@ builder.Services.AddScoped<IPdfExportService, PdfExportService>();
 builder.Services.AddScoped<IPlanSemanalService, PlanSemanalService>();
 builder.Services.AddScoped<IListaCompraService, ListaCompraService>();
 builder.Services.AddScoped<IImageImportService, ImageImportService>();
+builder.Services.AddScoped<IOpenFoodFactsService, OpenFoodFactsService>();
 
 // Controllers
 builder.Services.AddControllers()

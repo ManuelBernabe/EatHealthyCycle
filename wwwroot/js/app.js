@@ -177,12 +177,41 @@ const App = {
                         <div style="font-size:12px;color:var(--text-secondary);">${new Date(d.fechaImportacion).toLocaleDateString('es')}</div>
                     </div>
                     <div style="display:flex;gap:8px;">
+                        <button class="btn btn-sm btn-outline" onclick="App.verDietaDetalle(${d.id}, this)">Ver</button>
                         <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Crear Plan</button>
                         <button class="btn btn-danger btn-sm" onclick="App.borrarDieta(${d.id})">X</button>
                     </div>
                 </div>
+                <div id="dieta-detalle-${d.id}" style="display:none;margin-top:8px;"></div>
             </div>
         `).join('');
+    },
+
+    async verDietaDetalle(id, btn) {
+        const el = document.getElementById(`dieta-detalle-${id}`);
+        if (el.style.display === 'block') { el.style.display = 'none'; btn.textContent = 'Ver'; return; }
+        el.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);">Cargando...</p>';
+        el.style.display = 'block';
+        btn.textContent = 'Ocultar';
+        try {
+            const dieta = await API.obtenerDieta(id);
+            const dayNames = { 0: 'Domingo', 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado' };
+            el.innerHTML = dieta.dias.map(dia => `
+                <div style="margin:6px 0;">
+                    <div style="font-weight:600;font-size:13px;color:var(--primary-dark);margin-bottom:4px;">${dayNames[dia.diaSemana] || 'Día ' + dia.diaSemana}</div>
+                    ${dia.comidas.map(c => `
+                        <div style="margin-left:8px;margin-bottom:4px;">
+                            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);">${c.tipo === 'MediaManana' ? 'Media Mañana' : c.tipo === 'PreDesayuno' ? 'Pre Desayuno' : c.tipo}</div>
+                            ${c.alimentos.map(a => `
+                                <div style="font-size:12px;margin-left:8px;padding:2px 0;">
+                                    ${App.escHtml(a.nombre)}${a.cantidad ? ' <span style="color:var(--text-secondary);">(' + App.escHtml(a.cantidad) + ')</span>' : ''}${a.kcal != null ? ' <span style="color:var(--accent);font-weight:600;">' + a.kcal + ' kcal</span>' : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('');
+        } catch (e) { el.innerHTML = `<p style="color:var(--danger);font-size:12px;">${e.message}</p>`; }
     },
 
     // --- IMPORT DIET ---
@@ -1032,6 +1061,194 @@ const App = {
                 </div>
             </div>`;
         document.body.appendChild(popup);
+    },
+
+    // --- MANUAL DIET ---
+    mdState: { days: {}, currentDay: 1 },
+
+    openManualDietModal() {
+        document.getElementById('md-nombre').value = '';
+        document.getElementById('md-desc').value = '';
+        const dayNames = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+        const dayValues = [1, 2, 3, 4, 5, 6, 0]; // Mon-Sun as DayOfWeek
+        this.mdState = { days: {}, currentDay: 1 };
+        dayValues.forEach(d => { this.mdState.days[d] = { comidas: [] }; });
+        const tabsEl = document.getElementById('md-day-tabs');
+        tabsEl.innerHTML = dayValues.map((d, i) =>
+            `<button class="btn btn-sm ${d === 1 ? 'btn-primary' : 'btn-outline'}" data-md-day="${d}" onclick="App.mdSelectDay(${d})" style="min-width:36px;padding:6px 8px;">${dayNames[i]}</button>`
+        ).join('');
+        this.mdRenderMeals();
+        this.openModal('modal-dieta-manual');
+    },
+
+    mdSelectDay(day) {
+        this.mdSaveCurrentMeals();
+        this.mdState.currentDay = day;
+        document.querySelectorAll('[data-md-day]').forEach(b => {
+            b.classList.toggle('btn-primary', parseInt(b.dataset.mdDay) === day);
+            b.classList.toggle('btn-outline', parseInt(b.dataset.mdDay) !== day);
+        });
+        this.mdRenderMeals();
+    },
+
+    mdSaveCurrentMeals() {
+        const mealsEl = document.getElementById('md-meals');
+        const meals = [];
+        mealsEl.querySelectorAll('.md-meal-block').forEach(block => {
+            const tipo = block.querySelector('.md-meal-tipo').value;
+            const foods = [];
+            block.querySelectorAll('.md-food-row').forEach(row => {
+                const nombre = row.querySelector('.md-food-nombre').value.trim();
+                if (!nombre) return;
+                const cantidad = row.querySelector('.md-food-cantidad').value.trim() || null;
+                const kcalVal = row.querySelector('.md-food-kcal').value;
+                const kcal = kcalVal ? parseInt(kcalVal) : null;
+                foods.push({ nombre, cantidad, categoria: null, kcal });
+            });
+            meals.push({ tipo, orden: meals.length, nota: null, alimentos: foods });
+        });
+        this.mdState.days[this.mdState.currentDay].comidas = meals;
+    },
+
+    mdRenderMeals() {
+        const meals = this.mdState.days[this.mdState.currentDay].comidas;
+        const container = document.getElementById('md-meals');
+        if (meals.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;text-align:center;padding:8px;">Añade comidas para este día</p>';
+            return;
+        }
+        container.innerHTML = meals.map((m, mi) => `
+            <div class="md-meal-block card" style="margin:8px 0;padding:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <select class="md-meal-tipo" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:13px;">
+                        ${['PreDesayuno','Desayuno','MediaManana','Almuerzo','Comida','Merienda','Cena'].map(t =>
+                            `<option value="${t}" ${t === m.tipo ? 'selected' : ''}>${t === 'PreDesayuno' ? 'Pre Desayuno' : t === 'MediaManana' ? 'Media Mañana' : t}</option>`
+                        ).join('')}
+                    </select>
+                    <button class="btn btn-danger btn-sm" style="margin-left:8px;padding:4px 10px;" onclick="App.mdRemoveMeal(${mi})">✕</button>
+                </div>
+                <div class="md-food-list">
+                    ${m.alimentos.map((f, fi) => App.mdFoodRowHtml(mi, fi, f)).join('')}
+                </div>
+                <button class="btn btn-sm btn-outline" style="margin-top:6px;font-size:12px;" onclick="App.mdAddFood(${mi})">+ Alimento</button>
+            </div>
+        `).join('');
+    },
+
+    mdFoodRowHtml(mi, fi, f) {
+        return `<div class="md-food-row" style="display:flex;gap:4px;align-items:center;margin:4px 0;">
+            <input class="md-food-nombre" type="text" placeholder="Alimento" value="${this.escHtml(f.nombre || '')}" style="flex:2;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+            <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;white-space:nowrap;" onclick="App.mdSearchOFF(${mi},${fi})">🔍</button>
+            <input class="md-food-cantidad" type="text" placeholder="Cant." value="${this.escHtml(f.cantidad || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+            <input class="md-food-kcal" type="number" placeholder="kcal" value="${f.kcal != null ? f.kcal : ''}" style="width:60px;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+            <button class="btn btn-danger btn-sm" style="padding:4px 8px;" onclick="App.mdRemoveFood(${mi},${fi})">✕</button>
+        </div>
+        <div id="md-off-results-${mi}-${fi}" style="display:none;"></div>`;
+    },
+
+    escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
+
+    mdAddMeal() {
+        this.mdSaveCurrentMeals();
+        this.mdState.days[this.mdState.currentDay].comidas.push({
+            tipo: 'Desayuno', orden: 0, nota: null,
+            alimentos: [{ nombre: '', cantidad: null, categoria: null, kcal: null }]
+        });
+        this.mdRenderMeals();
+    },
+
+    mdRemoveMeal(mi) {
+        this.mdSaveCurrentMeals();
+        this.mdState.days[this.mdState.currentDay].comidas.splice(mi, 1);
+        this.mdRenderMeals();
+    },
+
+    mdAddFood(mi) {
+        this.mdSaveCurrentMeals();
+        this.mdState.days[this.mdState.currentDay].comidas[mi].alimentos.push({ nombre: '', cantidad: null, categoria: null, kcal: null });
+        this.mdRenderMeals();
+    },
+
+    mdRemoveFood(mi, fi) {
+        this.mdSaveCurrentMeals();
+        this.mdState.days[this.mdState.currentDay].comidas[mi].alimentos.splice(fi, 1);
+        this.mdRenderMeals();
+    },
+
+    async mdSearchOFF(mi, fi) {
+        const mealsEl = document.getElementById('md-meals');
+        const blocks = mealsEl.querySelectorAll('.md-meal-block');
+        const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
+        const term = row.querySelector('.md-food-nombre').value.trim();
+        if (!term || term.length < 2) return this.toast('Escribe al menos 2 caracteres', 'error');
+
+        const resultsEl = document.getElementById(`md-off-results-${mi}-${fi}`);
+        resultsEl.style.display = 'block';
+        resultsEl.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px;">Buscando...</p>';
+
+        try {
+            const results = await API.buscarAlimentos(term);
+            if (!results || results.length === 0) {
+                resultsEl.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px;">Sin resultados</p>';
+                return;
+            }
+            resultsEl.innerHTML = `<div style="max-height:150px;overflow-y:auto;border:1px solid #e0e0e0;border-radius:6px;margin:4px 0;">
+                ${results.slice(0, 10).map((r, ri) => `
+                    <div onclick="App.mdSelectOFF(${mi},${fi},${ri})" style="padding:6px 8px;font-size:12px;cursor:pointer;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;"
+                         onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='white'">
+                        <span>${App.escHtml(r.nombre)}${r.marca ? ' <span style="color:var(--text-secondary);">(' + App.escHtml(r.marca) + ')</span>' : ''}</span>
+                        <span style="color:var(--accent);font-weight:600;white-space:nowrap;margin-left:8px;">${r.kcalPor100g != null ? r.kcalPor100g + ' kcal/100g' : '—'}</span>
+                    </div>
+                `).join('')}
+            </div>`;
+            this._offResults = results;
+        } catch (e) {
+            resultsEl.innerHTML = `<p style="font-size:12px;color:var(--danger);padding:4px;">${e.message}</p>`;
+        }
+    },
+
+    mdSelectOFF(mi, fi, ri) {
+        const r = this._offResults[ri];
+        const blocks = document.getElementById('md-meals').querySelectorAll('.md-meal-block');
+        const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
+        row.querySelector('.md-food-nombre').value = r.nombre + (r.marca ? ` (${r.marca})` : '');
+        if (r.kcalPor100g != null) row.querySelector('.md-food-kcal').value = r.kcalPor100g;
+        document.getElementById(`md-off-results-${mi}-${fi}`).style.display = 'none';
+    },
+
+    async guardarDietaManual() {
+        const nombre = document.getElementById('md-nombre').value.trim();
+        if (!nombre) return this.toast('Escribe un nombre para la dieta', 'error');
+
+        this.mdSaveCurrentMeals();
+
+        const dias = [];
+        for (const [day, data] of Object.entries(this.mdState.days)) {
+            if (data.comidas.length === 0) continue;
+            const comidas = data.comidas.filter(c => c.alimentos.length > 0).map((c, i) => ({
+                tipo: c.tipo,
+                orden: i,
+                nota: c.nota,
+                alimentos: c.alimentos
+            }));
+            if (comidas.length === 0) continue;
+            dias.push({ diaSemana: parseInt(day), nota: null, comidas });
+        }
+
+        if (dias.length === 0) return this.toast('Añade al menos una comida con alimentos', 'error');
+
+        try {
+            await API.crearDietaManual(API.user.id, {
+                nombre,
+                descripcion: document.getElementById('md-desc').value.trim() || null,
+                dias
+            });
+            this.toast('Dieta creada correctamente');
+            this.closeModal('modal-dieta-manual');
+            this.loadDashboard();
+        } catch (e) {
+            this.toast(e.message, 'error');
+        }
     },
 
     // --- MODALS ---

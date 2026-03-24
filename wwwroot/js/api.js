@@ -109,6 +109,13 @@ const API = {
     listarDietas: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/dietas`),
     obtenerDieta: (id) => API.request('GET', `/api/dietas/${id}`),
     eliminarDieta: (id) => API.request('DELETE', `/api/dietas/${id}`),
+    crearDietaManual: (usuarioId, data) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/manual`, data),
+
+    // Alimentos
+    buscarAlimentos: (q) => API.request('GET', `/api/alimentos/buscar?q=${encodeURIComponent(q)}`),
+    agregarAlimento: (comidaId, data) => API.request('POST', `/api/comidas/${comidaId}/alimentos`, data),
+    actualizarAlimento: (id, data) => API.request('PUT', `/api/alimentos/${id}`, data),
+    eliminarAlimento: (id) => API.request('DELETE', `/api/alimentos/${id}`),
 
     // Planes
     crearPlan: (usuarioId, dietaId, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes`, { dietaId, fechaInicio }),

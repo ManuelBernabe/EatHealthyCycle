@@ -7,6 +7,7 @@ public class Alimento
     public string Nombre { get; set; } = string.Empty;
     public string? Cantidad { get; set; }
     public string? Categoria { get; set; }
+    public int? Kcal { get; set; }
 
     public Comida Comida { get; set; } = null!;
 }

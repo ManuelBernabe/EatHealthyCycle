@@ -111,6 +111,7 @@
             <div style="display:flex;gap:6px;">
                 <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">+ PDF</button>
                 <button class="btn btn-sm" style="background:#2196F3;color:white;" onclick="App.openModal('modal-import-imagen')">+ Imagen</button>
+                <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.openManualDietModal()">+ Dieta Manual</button>
                 <button class="btn btn-accent btn-sm" onclick="App.openModal('modal-plan-manual')">+ Plan Manual</button>
             </div>
         </div>
@@ -293,6 +294,28 @@
             <input type="date" id="manual-plan-date">
         </div>
         <button class="btn btn-primary" onclick="App.crearPlanManual()">Crear Plan</button>
+    </div>
+</div>
+
+<!-- Manual Diet Modal -->
+<div id="modal-dieta-manual" class="modal-overlay" onclick="if(event.target===this)App.closeModal('modal-dieta-manual')">
+    <div class="modal" style="max-height:85vh;overflow-y:auto;">
+        <div class="modal-handle"></div>
+        <h3>Crear Dieta Manual</h3>
+        <div class="form-group">
+            <label>Nombre de la dieta</label>
+            <input type="text" id="md-nombre" placeholder="Ej: Mi Dieta Personalizada">
+        </div>
+        <div class="form-group">
+            <label>Descripción (opcional)</label>
+            <input type="text" id="md-desc" placeholder="Descripción breve">
+        </div>
+        <div id="md-day-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin:12px 0;"></div>
+        <div id="md-meals" style="margin-top:8px;"></div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="btn btn-accent btn-sm" onclick="App.mdAddMeal()">+ Comida</button>
+        </div>
+        <button class="btn btn-primary" style="margin-top:16px;" onclick="App.guardarDietaManual()">Guardar Dieta</button>
     </div>
 </div>
 
