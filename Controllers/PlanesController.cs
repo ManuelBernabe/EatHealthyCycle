@@ -30,6 +30,12 @@ public class PlanesController : ControllerBase
         var usuario = await _db.Usuarios.FindAsync(usuarioId);
         if (usuario == null) return NotFound("Usuario no encontrado");
 
+        // Check for duplicate week
+        var lunes = dto.FechaInicio;
+        while (lunes.DayOfWeek != DayOfWeek.Monday) lunes = lunes.AddDays(-1);
+        var yaExiste = await _db.PlanesSemanal.AnyAsync(p => p.UsuarioId == usuarioId && p.FechaInicio == lunes);
+        if (yaExiste) return Conflict("Ya existe un plan para esa semana");
+
         var plan = await _planService.GenerarPlanAsync(usuarioId, dto.DietaId, dto.FechaInicio);
         var dieta = await _db.Dietas.FindAsync(dto.DietaId);
 
@@ -46,6 +52,9 @@ public class PlanesController : ControllerBase
         var fechaInicio = dto.FechaInicio;
         while (fechaInicio.DayOfWeek != DayOfWeek.Monday)
             fechaInicio = fechaInicio.AddDays(-1);
+
+        var yaExiste = await _db.PlanesSemanal.AnyAsync(p => p.UsuarioId == usuarioId && p.FechaInicio == fechaInicio);
+        if (yaExiste) return Conflict("Ya existe un plan para esa semana");
 
         var plan = new PlanSemanal
         {
