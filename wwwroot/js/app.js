@@ -1117,6 +1117,7 @@ const App = {
         const container = document.getElementById('md-meals');
         if (meals.length === 0) {
             container.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;text-align:center;padding:8px;">Añade comidas para este día</p>';
+            this.mdUpdateTotal();
             return;
         }
         container.innerHTML = meals.map((m, mi) => `
@@ -1135,6 +1136,7 @@ const App = {
                 <button class="btn btn-sm btn-outline" style="margin-top:6px;font-size:12px;" onclick="App.mdAddFood(${mi})">+ Alimento</button>
             </div>
         `).join('');
+        this.mdUpdateTotal();
     },
 
     mdFoodRowHtml(mi, fi, f) {
@@ -1149,7 +1151,7 @@ const App = {
                 <input class="md-food-cantidad" type="text" placeholder="Cantidad (ej: 300g)" value="${this.escHtml(f.cantidad || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;" oninput="App.mdRecalcKcal(${mi},${fi})">
                 <input class="md-food-kcal100" type="hidden" value="${kcal100}">
                 <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${kcal100 ? kcal100 + '/100g' : ''}</span>
-                <input class="md-food-kcal" type="number" placeholder="kcal" value="${f.kcal != null ? f.kcal : ''}" style="width:70px;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+                <input class="md-food-kcal" type="number" placeholder="kcal" value="${f.kcal != null ? f.kcal : ''}" style="width:70px;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;" oninput="App.mdUpdateTotal()">
                 <span style="font-size:11px;color:var(--text-secondary);">kcal</span>
             </div>
         </div>
@@ -1157,6 +1159,16 @@ const App = {
     },
 
     escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
+
+    mdUpdateTotal() {
+        let total = 0;
+        document.querySelectorAll('#md-meals .md-food-kcal').forEach(input => {
+            const v = parseInt(input.value);
+            if (v > 0) total += v;
+        });
+        const el = document.getElementById('md-kcal-total');
+        el.textContent = total > 0 ? `Total: ${total} kcal` : '';
+    },
 
     mdAddMeal() {
         this.mdSaveCurrentMeals();
@@ -1232,6 +1244,7 @@ const App = {
             row.querySelector('.md-food-kcal100').parentElement.querySelector('span').textContent = r.kcalPor100g + '/100g';
         }
         document.getElementById(`md-off-results-${mi}-${fi}`).style.display = 'none';
+        this.mdUpdateTotal();
     },
 
     mdRecalcKcal(mi, fi) {
@@ -1243,6 +1256,7 @@ const App = {
         if (grams > 0) {
             row.querySelector('.md-food-kcal').value = Math.round(kcal100 * grams / 100);
         }
+        this.mdUpdateTotal();
     },
 
     mdParseGrams(text) {
