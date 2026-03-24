@@ -1247,12 +1247,16 @@ const App = {
 
     mdParseGrams(text) {
         if (!text) return 0;
-        // Match number before 'g' or 'gr' (e.g. "300g", "300 g", "300gr", "150 gramos")
-        const m = text.match(/(\d+(?:[.,]\d+)?)\s*(?:g(?:r(?:amos)?)?)\b/i);
-        if (m) return parseFloat(m[1].replace(',', '.'));
-        // Match "Xml" and treat as grams (close enough for liquids)
-        const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\b/i);
+        text = text.trim();
+        // "300g", "300 g", "300gr", "150 gramos"
+        const g = text.match(/(\d+(?:[.,]\d+)?)\s*(?:g(?:r(?:amos)?)?)\s*$/i);
+        if (g) return parseFloat(g[1].replace(',', '.'));
+        // "200ml", "200 ml"
+        const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\s*$/i);
         if (ml) return parseFloat(ml[1].replace(',', '.'));
+        // Plain number without unit — assume grams (e.g. "300")
+        const plain = text.match(/^(\d+(?:[.,]\d+)?)\s*$/);
+        if (plain) return parseFloat(plain[1].replace(',', '.'));
         return 0;
     },
 
@@ -1269,7 +1273,7 @@ const App = {
                 tipo: c.tipo,
                 orden: i,
                 nota: c.nota,
-                alimentos: c.alimentos
+                alimentos: c.alimentos.map(a => ({ nombre: a.nombre, cantidad: a.cantidad, categoria: a.categoria, kcal: a.kcal }))
             }));
             if (comidas.length === 0) continue;
             dias.push({ diaSemana: parseInt(day), nota: null, comidas });
