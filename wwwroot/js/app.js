@@ -462,7 +462,7 @@ const App = {
     selectDay(index) {
         this.currentDayIndex = index;
         if (this.currentPlan) {
-            this.renderPlan(this.currentPlan);
+            this.renderPlan(this.currentPlan, true);
         }
     },
 
