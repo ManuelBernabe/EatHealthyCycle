@@ -1103,7 +1103,9 @@ const App = {
                 const cantidad = row.querySelector('.md-food-cantidad').value.trim() || null;
                 const kcalVal = row.querySelector('.md-food-kcal').value;
                 const kcal = kcalVal ? parseInt(kcalVal) : null;
-                foods.push({ nombre, cantidad, categoria: null, kcal });
+                const kcal100Val = row.querySelector('.md-food-kcal100').value;
+                const _kcalPor100g = kcal100Val ? parseFloat(kcal100Val) : null;
+                foods.push({ nombre, cantidad, categoria: null, kcal, _kcalPor100g });
             });
             meals.push({ tipo, orden: meals.length, nota: null, alimentos: foods });
         });
@@ -1136,12 +1138,20 @@ const App = {
     },
 
     mdFoodRowHtml(mi, fi, f) {
-        return `<div class="md-food-row" style="display:flex;gap:4px;align-items:center;margin:4px 0;">
-            <input class="md-food-nombre" type="text" placeholder="Alimento" value="${this.escHtml(f.nombre || '')}" style="flex:2;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
-            <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;white-space:nowrap;" onclick="App.mdSearchOFF(${mi},${fi})">🔍</button>
-            <input class="md-food-cantidad" type="text" placeholder="Cant." value="${this.escHtml(f.cantidad || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
-            <input class="md-food-kcal" type="number" placeholder="kcal" value="${f.kcal != null ? f.kcal : ''}" style="width:60px;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
-            <button class="btn btn-danger btn-sm" style="padding:4px 8px;" onclick="App.mdRemoveFood(${mi},${fi})">✕</button>
+        const kcal100 = f._kcalPor100g != null ? f._kcalPor100g : '';
+        return `<div class="md-food-row" style="margin:6px 0;padding:6px;background:#fafafa;border-radius:8px;border:1px solid #e8e8e8;">
+            <div style="display:flex;gap:4px;align-items:center;">
+                <input class="md-food-nombre" type="text" placeholder="Nombre del alimento" value="${this.escHtml(f.nombre || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+                <button class="btn btn-sm" style="padding:4px 8px;font-size:11px;background:#2196F3;color:white;" onclick="App.mdSearchOFF(${mi},${fi})">🔍</button>
+                <button class="btn btn-danger btn-sm" style="padding:4px 8px;" onclick="App.mdRemoveFood(${mi},${fi})">✕</button>
+            </div>
+            <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+                <input class="md-food-cantidad" type="text" placeholder="Cantidad (ej: 300g)" value="${this.escHtml(f.cantidad || '')}" style="flex:1;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;" oninput="App.mdRecalcKcal(${mi},${fi})">
+                <input class="md-food-kcal100" type="hidden" value="${kcal100}">
+                <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${kcal100 ? kcal100 + '/100g' : ''}</span>
+                <input class="md-food-kcal" type="number" placeholder="kcal" value="${f.kcal != null ? f.kcal : ''}" style="width:70px;padding:6px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+                <span style="font-size:11px;color:var(--text-secondary);">kcal</span>
+            </div>
         </div>
         <div id="md-off-results-${mi}-${fi}" style="display:none;"></div>`;
     },
@@ -1152,7 +1162,7 @@ const App = {
         this.mdSaveCurrentMeals();
         this.mdState.days[this.mdState.currentDay].comidas.push({
             tipo: 'Desayuno', orden: 0, nota: null,
-            alimentos: [{ nombre: '', cantidad: null, categoria: null, kcal: null }]
+            alimentos: [{ nombre: '', cantidad: null, categoria: null, kcal: null, _kcalPor100g: null }]
         });
         this.mdRenderMeals();
     },
@@ -1165,7 +1175,7 @@ const App = {
 
     mdAddFood(mi) {
         this.mdSaveCurrentMeals();
-        this.mdState.days[this.mdState.currentDay].comidas[mi].alimentos.push({ nombre: '', cantidad: null, categoria: null, kcal: null });
+        this.mdState.days[this.mdState.currentDay].comidas[mi].alimentos.push({ nombre: '', cantidad: null, categoria: null, kcal: null, _kcalPor100g: null });
         this.mdRenderMeals();
     },
 
@@ -1212,8 +1222,38 @@ const App = {
         const blocks = document.getElementById('md-meals').querySelectorAll('.md-meal-block');
         const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
         row.querySelector('.md-food-nombre').value = r.nombre + (r.marca ? ` (${r.marca})` : '');
-        if (r.kcalPor100g != null) row.querySelector('.md-food-kcal').value = r.kcalPor100g;
+        if (r.kcalPor100g != null) {
+            row.querySelector('.md-food-kcal100').value = r.kcalPor100g;
+            // Auto-calc if quantity already set, otherwise show per 100g
+            const cantText = row.querySelector('.md-food-cantidad').value;
+            const grams = this.mdParseGrams(cantText);
+            row.querySelector('.md-food-kcal').value = grams > 0 ? Math.round(r.kcalPor100g * grams / 100) : r.kcalPor100g;
+            // Update the label
+            row.querySelector('.md-food-kcal100').parentElement.querySelector('span').textContent = r.kcalPor100g + '/100g';
+        }
         document.getElementById(`md-off-results-${mi}-${fi}`).style.display = 'none';
+    },
+
+    mdRecalcKcal(mi, fi) {
+        const blocks = document.getElementById('md-meals').querySelectorAll('.md-meal-block');
+        const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
+        const kcal100 = parseFloat(row.querySelector('.md-food-kcal100').value);
+        if (!kcal100) return;
+        const grams = this.mdParseGrams(row.querySelector('.md-food-cantidad').value);
+        if (grams > 0) {
+            row.querySelector('.md-food-kcal').value = Math.round(kcal100 * grams / 100);
+        }
+    },
+
+    mdParseGrams(text) {
+        if (!text) return 0;
+        // Match number before 'g' or 'gr' (e.g. "300g", "300 g", "300gr", "150 gramos")
+        const m = text.match(/(\d+(?:[.,]\d+)?)\s*(?:g(?:r(?:amos)?)?)\b/i);
+        if (m) return parseFloat(m[1].replace(',', '.'));
+        // Match "Xml" and treat as grams (close enough for liquids)
+        const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\b/i);
+        if (ml) return parseFloat(ml[1].replace(',', '.'));
+        return 0;
     },
 
     async guardarDietaManual() {
