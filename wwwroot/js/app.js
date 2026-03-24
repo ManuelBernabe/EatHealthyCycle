@@ -196,7 +196,8 @@ const App = {
         btn.textContent = 'Ocultar';
         try {
             const dieta = await API.obtenerDieta(id);
-            const dayNames = { 0: 'Domingo', 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado' };
+            const dayNames = { 0: 'Domingo', 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado',
+                Sunday: 'Domingo', Monday: 'Lunes', Tuesday: 'Martes', Wednesday: 'Miércoles', Thursday: 'Jueves', Friday: 'Viernes', Saturday: 'Sábado' };
             el.innerHTML = dieta.dias.map(dia => `
                 <div style="margin:6px 0;">
                     <div style="font-weight:600;font-size:13px;color:var(--primary-dark);margin-bottom:4px;">${dayNames[dia.diaSemana] || 'Día ' + dia.diaSemana}</div>
@@ -1067,6 +1068,14 @@ const App = {
     // --- MANUAL DIET ---
     mdState: { days: {}, currentDay: 1 },
 
+    _dayNameToNum: { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 },
+
+    mdDayKey(diaSemana) {
+        // Handle both string ("Monday") and number (1) from API
+        if (typeof diaSemana === 'string') return this._dayNameToNum[diaSemana] ?? 0;
+        return diaSemana;
+    },
+
     openManualDietModal(editId, nombre, desc, daysData) {
         document.getElementById('md-nombre').value = nombre || '';
         document.getElementById('md-desc').value = desc || '';
@@ -1077,7 +1086,7 @@ const App = {
         // Load existing data if editing
         if (daysData) {
             daysData.forEach(dia => {
-                this.mdState.days[dia.diaSemana] = {
+                this.mdState.days[this.mdDayKey(dia.diaSemana)] = {
                     comidas: dia.comidas.map(c => ({
                         tipo: c.tipo,
                         orden: c.orden,
