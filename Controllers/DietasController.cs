@@ -238,6 +238,83 @@ public class DietasController : ControllerBase
             new DietaResumenDto(dieta.Id, dieta.Nombre, dieta.Descripcion, dieta.FechaImportacion, dieta.ArchivoOriginal));
     }
 
+    // --- Export / Import JSON ---
+
+    [HttpGet("dietas/{id}/export")]
+    public async Task<IActionResult> Exportar(int id)
+    {
+        var dieta = await _db.Dietas
+            .Include(d => d.Dias).ThenInclude(dd => dd.Comidas).ThenInclude(c => c.Alimentos)
+            .FirstOrDefaultAsync(d => d.Id == id);
+        if (dieta == null) return NotFound();
+
+        var export = new
+        {
+            dieta.Nombre,
+            dieta.Descripcion,
+            Dias = dieta.Dias.OrderBy(d => d.DiaSemana).Select(dd => new
+            {
+                dd.DiaSemana,
+                dd.Nota,
+                Comidas = dd.Comidas.OrderBy(c => c.Orden).Select(c => new
+                {
+                    c.Tipo,
+                    c.Orden,
+                    c.Nota,
+                    Alimentos = c.Alimentos.Select(a => new
+                    {
+                        a.Nombre,
+                        a.Cantidad,
+                        a.Categoria,
+                        a.Kcal
+                    }).ToList()
+                }).ToList()
+            }).ToList()
+        };
+
+        return Ok(export);
+    }
+
+    [HttpPost("usuarios/{usuarioId}/dietas/import-json")]
+    public async Task<ActionResult<DietaResumenDto>> ImportarJson(int usuarioId, CrearDietaManualDto dto)
+    {
+        var usuario = await _db.Usuarios.FindAsync(usuarioId);
+        if (usuario == null) return NotFound("Usuario no encontrado");
+
+        var dieta = new Models.Dieta
+        {
+            UsuarioId = usuarioId,
+            Nombre = dto.Nombre,
+            Descripcion = dto.Descripcion,
+            FechaImportacion = DateTime.UtcNow,
+            ArchivoOriginal = "import-json",
+            Dias = dto.Dias.Select(d => new Models.DietaDia
+            {
+                DiaSemana = d.DiaSemana,
+                Nota = d.Nota,
+                Comidas = d.Comidas.Select(c => new Models.Comida
+                {
+                    Tipo = c.Tipo,
+                    Orden = c.Orden,
+                    Nota = c.Nota,
+                    Alimentos = c.Alimentos.Select(a => new Models.Alimento
+                    {
+                        Nombre = a.Nombre,
+                        Cantidad = a.Cantidad,
+                        Categoria = a.Categoria,
+                        Kcal = a.Kcal
+                    }).ToList()
+                }).ToList()
+            }).ToList()
+        };
+
+        _db.Dietas.Add(dieta);
+        await _db.SaveChangesAsync();
+
+        return CreatedAtAction(nameof(ObtenerDetalle), new { id = dieta.Id },
+            new DietaResumenDto(dieta.Id, dieta.Nombre, dieta.Descripcion, dieta.FechaImportacion, dieta.ArchivoOriginal));
+    }
+
     // --- CRUD individual de alimentos ---
 
     [HttpPost("comidas/{comidaId}/alimentos")]

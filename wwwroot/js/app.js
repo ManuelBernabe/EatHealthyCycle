@@ -27,12 +27,16 @@ const App = {
         this.bindNav();
     },
 
-    updateAdminNav() {
+    isAdmin() {
         const role = API.user?.role;
+        return role === 'Admin' || role === 'Superuser' || role === 'SuperUserMaster';
+    },
+
+    updateAdminNav() {
+        const show = this.isAdmin();
         const adminBtn = document.querySelector('.nav-admin');
-        if (adminBtn) {
-            adminBtn.style.display = (role === 'Admin' || role === 'Superuser' || role === 'SuperUserMaster') ? 'flex' : 'none';
-        }
+        if (adminBtn) adminBtn.style.display = show ? 'flex' : 'none';
+        document.querySelectorAll('.admin-only').forEach(el => el.style.display = show ? '' : 'none');
     },
 
     showPage(name) {
@@ -180,6 +184,7 @@ const App = {
                         <button class="btn btn-sm btn-outline" onclick="App.verDietaDetalle(${d.id}, this)">Ver</button>
                         <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.editarDieta(${d.id})">Editar</button>
                         <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Plan</button>
+                        <button class="btn btn-sm" style="background:#009688;color:white;" onclick="App.exportarDieta(${d.id})">↗ Export</button>
                         <button class="btn btn-danger btn-sm" onclick="App.borrarDieta(${d.id})">X</button>
                     </div>
                 </div>
@@ -1096,6 +1101,41 @@ const App = {
         } catch (e) {
             document.getElementById('sql-result').innerHTML = `<div style="padding:12px;background:#ffebee;border-radius:8px;color:#c62828;">${e.message}</div>`;
         }
+    },
+
+    // --- EXPORT / IMPORT ---
+    async exportarDieta(id) {
+        try {
+            const data = await API.exportarDieta(id);
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `dieta-${data.nombre.replace(/\s+/g, '-').toLowerCase()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            this.toast('Dieta exportada');
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async importarDietaJson() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = async () => {
+            const file = input.files[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                const data = JSON.parse(text);
+                if (!data.nombre || !data.dias) return this.toast('JSON no válido: falta nombre o dias', 'error');
+                await API.importarDietaJson(API.user.id, data);
+                this.toast('Dieta importada correctamente');
+                this.loadDashboard();
+            } catch (e) { this.toast(e.message, 'error'); }
+        };
+        input.click();
     },
 
     // --- VERSION CHECK ---

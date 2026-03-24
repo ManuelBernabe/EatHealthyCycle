@@ -118,6 +118,10 @@ const API = {
     actualizarAlimento: (id, data) => API.request('PUT', `/api/alimentos/${id}`, data),
     eliminarAlimento: (id) => API.request('DELETE', `/api/alimentos/${id}`),
 
+    // Export / Import
+    exportarDieta: (id) => API.request('GET', `/api/dietas/${id}/export`),
+    importarDietaJson: (usuarioId, data) => API.request('POST', `/api/usuarios/${usuarioId}/dietas/import-json`, data),
+
     // Planes
     crearPlan: (usuarioId, dietaId, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes`, { dietaId, fechaInicio }),
     crearPlanManual: (usuarioId, nombre, fechaInicio) => API.request('POST', `/api/usuarios/${usuarioId}/planes/manual`, { nombre, fechaInicio }),
