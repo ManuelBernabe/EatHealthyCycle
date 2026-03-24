@@ -1278,8 +1278,14 @@ const App = {
             row.querySelector('.md-food-kcal100').value = r.kcalPor100g;
             // Auto-calc if quantity already set, otherwise show per 100g
             const cantText = row.querySelector('.md-food-cantidad').value;
-            const grams = this.mdParseGrams(cantText);
-            row.querySelector('.md-food-kcal').value = grams > 0 ? Math.round(r.kcalPor100g * grams / 100) : r.kcalPor100g;
+            const qty = this.mdParseQuantity(cantText);
+            if (qty && qty.grams != null) {
+                row.querySelector('.md-food-kcal').value = Math.round(r.kcalPor100g * qty.grams / 100);
+            } else if (qty && qty.multiplier != null) {
+                row.querySelector('.md-food-kcal').value = Math.round(r.kcalPor100g * qty.multiplier);
+            } else {
+                row.querySelector('.md-food-kcal').value = r.kcalPor100g;
+            }
             // Update the label
             row.querySelector('.md-food-kcal100').parentElement.querySelector('span').textContent = r.kcalPor100g + '/100g';
         }
@@ -1292,26 +1298,35 @@ const App = {
         const row = blocks[mi].querySelectorAll('.md-food-row')[fi];
         const kcal100 = parseFloat(row.querySelector('.md-food-kcal100').value);
         if (!kcal100) return;
-        const grams = this.mdParseGrams(row.querySelector('.md-food-cantidad').value);
-        if (grams > 0) {
-            row.querySelector('.md-food-kcal').value = Math.round(kcal100 * grams / 100);
+        const qty = this.mdParseQuantity(row.querySelector('.md-food-cantidad').value);
+        if (qty) {
+            row.querySelector('.md-food-kcal').value = qty.grams != null
+                ? Math.round(kcal100 * qty.grams / 100)
+                : Math.round(kcal100 * qty.multiplier);
         }
         this.mdUpdateTotal();
     },
 
-    mdParseGrams(text) {
-        if (!text) return 0;
+    // Returns { grams: N } for weight-based, { multiplier: N } for units, or null
+    mdParseQuantity(text) {
+        if (!text) return null;
         text = text.trim();
         // "300g", "300 g", "300gr", "150 gramos"
         const g = text.match(/(\d+(?:[.,]\d+)?)\s*(?:g(?:r(?:amos)?)?)\s*$/i);
-        if (g) return parseFloat(g[1].replace(',', '.'));
+        if (g) return { grams: parseFloat(g[1].replace(',', '.')) };
         // "200ml", "200 ml"
         const ml = text.match(/(\d+(?:[.,]\d+)?)\s*ml\s*$/i);
-        if (ml) return parseFloat(ml[1].replace(',', '.'));
-        // Plain number without unit — assume grams (e.g. "300")
+        if (ml) return { grams: parseFloat(ml[1].replace(',', '.')) };
+        // "200 kg", "1,5kg"
+        const kg = text.match(/(\d+(?:[.,]\d+)?)\s*kg\s*$/i);
+        if (kg) return { grams: parseFloat(kg[1].replace(',', '.')) * 1000 };
+        // "2 latas", "3 unidades", "1 bote", "2 piezas", etc. → multiplier
+        const unit = text.match(/(\d+(?:[.,]\d+)?)\s*(?:latas?|unidad(?:es)?|botes?|piezas?|racion(?:es)?|sobre(?:s)?|cucharada(?:s)?|taza(?:s)?|rebanada(?:s)?|porcion(?:es)?|porciones)\s*$/i);
+        if (unit) return { multiplier: parseFloat(unit[1].replace(',', '.')) };
+        // Plain number — treat as multiplier (e.g. "2" = 2 portions of 100g)
         const plain = text.match(/^(\d+(?:[.,]\d+)?)\s*$/);
-        if (plain) return parseFloat(plain[1].replace(',', '.'));
-        return 0;
+        if (plain) return { multiplier: parseFloat(plain[1].replace(',', '.')) };
+        return null;
     },
 
     async guardarDietaManual() {
