@@ -354,13 +354,16 @@ const App = {
     async repetirPlanSiguiente() {
         const plan = this.currentPlan;
         if (!plan || !plan.dietaId) return this.toast('Este plan no tiene dieta asociada', 'error');
-        const fechaFin = new Date(plan.fechaFin);
-        const nextMonday = new Date(fechaFin);
-        nextMonday.setDate(nextMonday.getDate() + 1);
-        const fecha = nextMonday.toISOString().split('T')[0];
+        // fechaInicio + 7 days = next Monday
+        const inicio = new Date(plan.fechaInicio);
+        const nextMonday = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + 7);
+        const y = nextMonday.getFullYear();
+        const m = String(nextMonday.getMonth() + 1).padStart(2, '0');
+        const d = String(nextMonday.getDate()).padStart(2, '0');
+        const fecha = `${y}-${m}-${d}`;
         try {
             await API.crearPlan(API.user.id, plan.dietaId, fecha);
-            this.toast('Plan creado para la semana siguiente');
+            this.toast('Plan creado para semana del ' + fecha);
             this.selectedPlanIndex = 0;
             this.loadPlan();
         } catch (e) { this.toast(e.message, 'error'); }
