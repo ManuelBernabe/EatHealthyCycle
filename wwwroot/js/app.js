@@ -176,10 +176,10 @@ const App = {
                         <strong>${d.nombre}</strong>
                         <div style="font-size:12px;color:var(--text-secondary);">${new Date(d.fechaImportacion).toLocaleDateString('es')}</div>
                     </div>
-                    <div style="display:flex;gap:8px;">
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
                         <button class="btn btn-sm btn-outline" onclick="App.verDietaDetalle(${d.id}, this)">Ver</button>
                         <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.editarDieta(${d.id})">Editar</button>
-                        <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Crear Plan</button>
+                        <button class="btn btn-primary btn-sm" onclick="App.crearPlanDesdeDieta(${d.id})">Plan</button>
                         <button class="btn btn-danger btn-sm" onclick="App.borrarDieta(${d.id})">X</button>
                     </div>
                 </div>

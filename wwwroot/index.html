@@ -108,11 +108,11 @@
     <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
             <div class="card-title">Mis Dietas</div>
-            <div style="display:flex;gap:6px;">
-                <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">+ PDF</button>
-                <button class="btn btn-sm" style="background:#2196F3;color:white;" onclick="App.openModal('modal-import-imagen')">+ Imagen</button>
-                <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.openManualDietModal()">+ Dieta Manual</button>
-                <button class="btn btn-accent btn-sm" onclick="App.openModal('modal-plan-manual')">+ Plan Manual</button>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+                <button class="btn btn-primary btn-sm" onclick="App.openModal('modal-import')">PDF</button>
+                <button class="btn btn-sm" style="background:#2196F3;color:white;" onclick="App.openModal('modal-import-imagen')">Imagen</button>
+                <button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.openManualDietModal()">Dieta</button>
+                <button class="btn btn-accent btn-sm" onclick="App.openModal('modal-plan-manual')">Plan</button>
             </div>
         </div>
         <div id="dietas-list"></div>

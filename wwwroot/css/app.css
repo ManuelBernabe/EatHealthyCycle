@@ -101,7 +101,7 @@ body {
 .btn-accent { background: var(--accent); color: white; }
 .btn-danger { background: var(--danger); color: white; }
 .btn-outline { background: transparent; border: 2px solid var(--primary); color: var(--primary); }
-.btn-sm { padding: 8px 16px; font-size: 13px; width: auto; }
+.btn-sm { padding: 5px 10px; font-size: 11px; width: auto; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* --- Forms --- */
