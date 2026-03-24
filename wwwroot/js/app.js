@@ -1133,7 +1133,10 @@ const App = {
                 <div class="md-food-list">
                     ${m.alimentos.map((f, fi) => App.mdFoodRowHtml(mi, fi, f)).join('')}
                 </div>
-                <button class="btn btn-sm btn-outline" style="margin-top:6px;font-size:12px;" onclick="App.mdAddFood(${mi})">+ Alimento</button>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+                    <button class="btn btn-sm btn-outline" style="font-size:12px;" onclick="App.mdAddFood(${mi})">+ Alimento</button>
+                    <div class="md-meal-subtotal" style="font-size:13px;font-weight:700;color:var(--accent);"></div>
+                </div>
             </div>
         `).join('');
         this.mdUpdateTotal();
@@ -1162,12 +1165,18 @@ const App = {
 
     mdUpdateTotal() {
         let total = 0;
-        document.querySelectorAll('#md-meals .md-food-kcal').forEach(input => {
-            const v = parseInt(input.value);
-            if (v > 0) total += v;
+        document.querySelectorAll('#md-meals .md-meal-block').forEach(block => {
+            let subtotal = 0;
+            block.querySelectorAll('.md-food-kcal').forEach(input => {
+                const v = parseInt(input.value);
+                if (v > 0) subtotal += v;
+            });
+            const label = block.querySelector('.md-meal-subtotal');
+            if (label) label.textContent = subtotal > 0 ? subtotal + ' kcal' : '';
+            total += subtotal;
         });
         const el = document.getElementById('md-kcal-total');
-        el.textContent = total > 0 ? `Total: ${total} kcal` : '';
+        el.textContent = total > 0 ? `Total dia: ${total} kcal` : '';
     },
 
     mdAddMeal() {
