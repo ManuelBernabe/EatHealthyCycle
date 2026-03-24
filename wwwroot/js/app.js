@@ -281,7 +281,7 @@ const App = {
     },
 
     async crearPlanDesdeDieta(dietaId) {
-        const lunes = getNextMonday();
+        const lunes = getCurrentMonday();
         try {
             await API.crearPlan(API.user.id, dietaId, lunes);
             this.toast('Plan semanal creado');
@@ -466,16 +466,24 @@ const App = {
         const plan = this.currentPlan;
         if (!plan) return;
         const dia = plan.dias[this.currentDayIndex];
+        if (!dia || !dia.comidas || dia.comidas.length === 0) return this.toast('No hay comidas en este día', 'error');
         const pendientes = dia.comidas.filter(c => !c.completada);
         if (pendientes.length === 0) return this.toast('Ya están todas completadas');
-        try {
-            for (const c of pendientes) {
-                await API.toggleComida(c.id);
-                c.completada = true;
+        let completadas = 0;
+        for (const c of pendientes) {
+            try {
+                const res = await API.toggleComida(c.id);
+                c.completada = res.completada;
+                completadas++;
+            } catch (e) {
+                this.toast('Error al completar: ' + e.message, 'error');
+                break;
             }
-            this.toast(`${pendientes.length} comidas completadas`);
+        }
+        if (completadas > 0) {
+            this.toast(`${completadas} comidas completadas`);
             this.renderPlan(plan);
-        } catch (e) { this.toast(e.message, 'error'); }
+        }
     },
 
     async toggleMeal(id, el) {
@@ -1478,10 +1486,11 @@ const App = {
     }
 };
 
-function getNextMonday() {
+function getCurrentMonday() {
     const d = new Date();
     const day = d.getDay();
-    const diff = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+    // Go back to Monday: Sunday(0)→-6, Mon(1)→0, Tue(2)→-1, Wed(3)→-2...
+    const diff = day === 0 ? -6 : 1 - day;
     d.setDate(d.getDate() + diff);
     return d.toISOString().split('T')[0];
 }
