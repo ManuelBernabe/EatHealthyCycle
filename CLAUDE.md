@@ -30,4 +30,6 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## Deployment Rules
 
-- **Version bump required on every deploy**: Before committing changes that will be deployed, always increment the `AppVersion` constant in `Controllers/VersionController.cs`. Use semantic versioning (MAJOR.MINOR.PATCH). Increment PATCH for fixes, MINOR for new features, MAJOR for breaking changes.
+- **Version bump required on every deploy**: Before committing changes that will be deployed, always increment:
+  1. `AppVersion` in `Controllers/VersionController.cs` — semantic versioning (PATCH for fixes, MINOR for features, MAJOR for breaking).
+  2. `CACHE` version in `wwwroot/sw.js` (e.g. `eatcycle-v14` → `eatcycle-v15`) — forces the Service Worker to reinstall and clear old cached files so users get the new version.
