@@ -2,18 +2,24 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>EatHealthyCycle - Guia de Usuario</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
-        .header { background: linear-gradient(135deg, #2e7d32, #4caf50); color: white; padding: 24px 20px; text-align: center; }
+        .header { background: linear-gradient(135deg, #2e7d32, #4caf50); color: white; padding: 24px 20px; text-align: center; position: sticky; top: 0; z-index: 10; }
         .header h1 { font-size: 24px; margin-bottom: 4px; }
         .header p { opacity: 0.9; font-size: 14px; }
         .container { max-width: 800px; margin: 0 auto; padding: 16px; }
+        .toc { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .toc h2 { color: #2e7d32; font-size: 18px; margin-bottom: 12px; }
+        .toc ul { list-style: none; padding: 0; }
+        .toc li { margin-bottom: 6px; }
+        .toc a { color: #2e7d32; text-decoration: none; font-size: 14px; display: block; padding: 4px 8px; border-radius: 6px; }
+        .toc a:hover { background: #e8f5e9; }
         .section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .section h2 { color: #2e7d32; font-size: 18px; margin-bottom: 12px; border-bottom: 2px solid #e8f5e9; padding-bottom: 8px; }
-        .section h3 { color: #555; font-size: 15px; margin: 12px 0 6px; }
+        .section h3 { color: #555; font-size: 15px; margin: 14px 0 6px; }
         .section p, .section li { font-size: 14px; margin-bottom: 6px; }
         .section ul { padding-left: 20px; }
         .section ol { padding-left: 20px; }
@@ -21,162 +27,338 @@
         .badge-admin { background: #e3f2fd; color: #1565c0; }
         .badge-user { background: #e8f5e9; color: #2e7d32; }
         .badge-new { background: #fff3e0; color: #e65100; }
+        .badge-master { background: #fce4ec; color: #c62828; }
         .tip { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 13px; }
-        .back-link { display: block; text-align: center; padding: 16px; color: #2e7d32; text-decoration: none; font-weight: 600; }
+        .warning { background: #fff3e0; border-left: 4px solid #ff9800; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 13px; }
+        .back-link { display: block; text-align: center; padding: 16px; color: #2e7d32; text-decoration: none; font-weight: 600; font-size: 16px; }
         .version { text-align: center; color: #999; font-size: 12px; padding: 16px; }
+        .meal-color { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+        .shortcut { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>EatHealthyCycle</h1>
-        <p>Guia de Usuario</p>
+        <p>Guia completa de usuario</p>
     </div>
     <div class="container">
 
-        <div class="section">
-            <h2>1. Inicio de Sesion</h2>
-            <p>Accede con tu email y contrasenya. Si es tu primera vez, un administrador debe crear tu cuenta.</p>
-            <h3>Seguridad</h3>
+        <!-- INDICE -->
+        <div class="toc">
+            <h2>Indice</h2>
             <ul>
-                <li>Tu sesion se mantiene activa mediante un token JWT</li>
-                <li>Puedes activar la verificacion en dos pasos (2FA) desde tu perfil</li>
+                <li><a href="#cuenta">1. Cuenta y acceso</a></li>
+                <li><a href="#dashboard">2. Dashboard (Inicio)</a></li>
+                <li><a href="#dietas">3. Gestion de dietas</a></li>
+                <li><a href="#plan">4. Plan semanal</a></li>
+                <li><a href="#compra">5. Lista de la compra</a></li>
+                <li><a href="#peso">6. Control de peso</a></li>
+                <li><a href="#perfil">7. Perfil y seguridad</a></li>
+                <li><a href="#admin">8. Panel de administracion</a></li>
+                <li><a href="#db">9. Base de datos</a></li>
+                <li><a href="#offline">10. Modo offline y PWA</a></li>
+                <li><a href="#portal">11. Portal de aplicaciones</a></li>
+                <li><a href="#actualizaciones">12. Actualizaciones</a></li>
+                <li><a href="#comidas">13. Tipos de comida</a></li>
             </ul>
         </div>
 
-        <div class="section">
-            <h2>2. Plan Semanal</h2>
-            <p>El plan semanal muestra tu dieta organizada por dias (Lunes a Domingo) con todas las comidas del dia.</p>
+        <!-- 1. CUENTA Y ACCESO -->
+        <div class="section" id="cuenta">
+            <h2>1. Cuenta y acceso</h2>
 
-            <h3>Importar dieta desde PDF</h3>
+            <h3>Iniciar sesion</h3>
+            <p>Introduce tu nombre de usuario y contrasenya en la pantalla de login. Tu sesion se mantiene activa mediante un token seguro (JWT).</p>
+
+            <h3>Crear cuenta</h3>
             <ol>
-                <li>Ve a la seccion <strong>Inicio</strong></li>
-                <li>Pulsa <strong>Importar PDF</strong></li>
-                <li>Selecciona tu archivo PDF de dieta</li>
-                <li>Pon un nombre a la dieta y selecciona la fecha de inicio</li>
-                <li>El sistema extraera automaticamente los alimentos de cada dia y comida</li>
+                <li>Pulsa <strong>"Crear cuenta"</strong> en la pantalla de login</li>
+                <li>Introduce un nombre de usuario (minimo 3 caracteres)</li>
+                <li>Introduce tu email</li>
+                <li>Crea una contrasenya segura (minimo 8 caracteres, una mayuscula, un numero y un caracter especial)</li>
+                <li>Revisa tu email para activar la cuenta</li>
             </ol>
-            <div class="tip">El PDF debe tener formato de tabla con columnas por dia (DIA 1, DIA 2...) y filas por comida (Desayuno, Almuerzo, Comida, Merienda, Cena). El "Dia off" se importa automaticamente si existe.</div>
+
+            <h3>Verificacion en dos pasos (2FA)</h3>
+            <p>Puedes activar 2FA desde tu perfil para mayor seguridad. Necesitaras una app como Google Authenticator o Authy.</p>
+            <ol>
+                <li>Ve a <strong>Perfil</strong> > <strong>Autenticacion 2FA</strong></li>
+                <li>Pulsa <strong>Activar 2FA</strong></li>
+                <li>Escanea el codigo QR con tu app de autenticacion (o introduce el codigo manual)</li>
+                <li>Introduce el codigo de 6 digitos para confirmar</li>
+            </ol>
+            <div class="tip">Una vez activado, cada vez que inicies sesion te pedira el codigo de tu app de autenticacion ademas de la contrasenya.</div>
+        </div>
+
+        <!-- 2. DASHBOARD -->
+        <div class="section" id="dashboard">
+            <h2>2. Dashboard (Inicio)</h2>
+            <p>Es la pantalla principal que ves al entrar. Muestra un resumen rapido de tu actividad:</p>
+            <ul>
+                <li><strong>Dietas</strong> - Numero de dietas que tienes importadas/creadas</li>
+                <li><strong>Planes</strong> - Numero de planes semanales activos</li>
+                <li><strong>Ultimo peso</strong> - Tu ultima medicion de peso registrada</li>
+                <li><strong>Registros</strong> - Total de registros de peso que has hecho</li>
+            </ul>
+
+            <h3>Cumplimiento semanal</h3>
+            <p>Barra de progreso que muestra el porcentaje de comidas que has completado en tu plan semanal activo. Al 100% significa que has marcado todas las comidas de la semana.</p>
+
+            <h3>Mis Dietas</h3>
+            <p>Listado de todas tus dietas con botones de accion rapida:</p>
+            <ul>
+                <li><strong>Ver</strong> - Muestra el detalle de la dieta con todos los dias y comidas</li>
+                <li><strong>Editar</strong> - Abre el editor para modificar la dieta</li>
+                <li><strong>Plan</strong> - Crea un plan semanal a partir de esta dieta (empieza el lunes de la semana actual)</li>
+                <li><strong>Export</strong> - Descarga la dieta en formato JSON</li>
+                <li><strong>X</strong> - Elimina la dieta</li>
+            </ul>
+
+            <h3>Botones de importacion</h3>
+            <ul>
+                <li><strong>PDF</strong> - Importar dieta desde archivo PDF</li>
+                <li><strong>Imagen</strong> - Importar dieta desde foto/imagen</li>
+                <li><strong>Dieta</strong> - Crear dieta manualmente</li>
+                <li><strong>Plan</strong> - Crear plan semanal manual (sin dieta asociada)</li>
+                <li><strong>Import</strong> - Importar dieta desde archivo JSON</li>
+            </ul>
+        </div>
+
+        <!-- 3. GESTION DE DIETAS -->
+        <div class="section" id="dietas">
+            <h2>3. Gestion de dietas</h2>
+            <p>Las dietas son la base de tus planes semanales. Puedes crearlas de varias formas:</p>
+
+            <h3>Importar desde PDF</h3>
+            <ol>
+                <li>Pulsa el boton <strong>PDF</strong> en el dashboard</li>
+                <li>Selecciona tu archivo PDF de dieta</li>
+                <li>Pon un nombre descriptivo (ej: "Dieta Marzo 2026")</li>
+                <li>El sistema extrae automaticamente los alimentos de cada dia y comida</li>
+            </ol>
+            <div class="tip">El PDF debe tener formato de tabla con columnas por dia (DIA 1, DIA 2...) y filas por comida (Desayuno, Almuerzo, Comida, Merienda, Cena).</div>
+
+            <h3>Importar desde imagen</h3>
+            <ol>
+                <li>Pulsa el boton <strong>Imagen</strong> en el dashboard</li>
+                <li>Selecciona una foto o captura de tu dieta (PNG, JPG, WEBP, etc.)</li>
+                <li>Pon un nombre a la dieta</li>
+                <li>El sistema analiza la imagen con inteligencia artificial y extrae la estructura</li>
+            </ol>
+
+            <h3>Crear dieta manual</h3>
+            <ol>
+                <li>Pulsa el boton <strong>Dieta</strong> en el dashboard</li>
+                <li>Pon un nombre a la dieta</li>
+                <li>Navega entre los 7 dias (Lunes a Domingo) con las pestanyas</li>
+                <li>Anade comidas: selecciona el tipo (Desayuno, Comida, Cena...) y pulsa <strong>+ Comida</strong></li>
+                <li>Dentro de cada comida, anade alimentos con nombre, cantidad y busca las kcal</li>
+                <li>Pulsa <strong>Guardar dieta</strong> cuando termines</li>
+            </ol>
+
+            <h3>Busqueda de alimentos y calorias</h3>
+            <p>Al crear o editar una dieta manualmente, puedes buscar alimentos para obtener sus calorias automaticamente:</p>
+            <ul>
+                <li>Escribe el nombre del alimento (minimo 2 caracteres) y pulsa <strong>Buscar</strong></li>
+                <li>El sistema consulta la base de datos de OpenFoodFacts</li>
+                <li>Selecciona el alimento correcto de los resultados</li>
+                <li>Las kcal se calculan automaticamente segun la cantidad</li>
+            </ul>
+
+            <h3>Entrada por voz</h3>
+            <p>En el editor de dieta manual, puedes dictar el nombre de los alimentos pulsando el icono del microfono junto al campo de texto. El sistema usa reconocimiento de voz del navegador.</p>
+
+            <h3>Importar desde JSON</h3>
+            <ol>
+                <li>Pulsa el boton <strong>Import</strong> en el dashboard</li>
+                <li>Selecciona un archivo JSON previamente exportado</li>
+                <li>La dieta se importa con toda su estructura (dias, comidas, alimentos)</li>
+            </ol>
+
+            <h3>Exportar dieta a JSON</h3>
+            <p>Pulsa <strong>Export</strong> junto a cualquier dieta para descargarla en formato JSON. Util para hacer copias de seguridad o compartir dietas con otros usuarios.</p>
+
+            <h3>Editar dieta existente</h3>
+            <p>Pulsa <strong>Editar</strong> junto a cualquier dieta para abrir el editor manual con los datos actuales. Puedes modificar dias, comidas y alimentos.</p>
+            <div class="warning">Al editar una dieta, los planes semanales que ya se crearon a partir de ella no se modifican. Solo los nuevos planes usaran la version actualizada.</div>
+        </div>
+
+        <!-- 4. PLAN SEMANAL -->
+        <div class="section" id="plan">
+            <h2>4. Plan semanal</h2>
+            <p>El plan semanal es tu dieta organizada por dias (Lunes a Domingo) con todas las comidas de cada dia. Es donde haces el seguimiento diario.</p>
+
+            <h3>Crear plan desde dieta</h3>
+            <p>Pulsa el boton <strong>Plan</strong> junto a cualquier dieta en el dashboard. Se crea automaticamente un plan para la semana actual (empieza el lunes).</p>
 
             <h3>Crear plan manual</h3>
             <ol>
-                <li>Pulsa <strong>Crear plan manual</strong></li>
-                <li>Pon un nombre y fecha de inicio</li>
-                <li>El sistema crea 7 dias vacios (Lunes a Domingo)</li>
-                <li>Anade comidas manualmente con el boton <strong>+ Anadir comida</strong></li>
+                <li>Pulsa el boton <strong>Plan</strong> (naranja) en el dashboard</li>
+                <li>Pon un nombre y selecciona la fecha de inicio</li>
+                <li>Se crean 7 dias vacios que puedes rellenar manualmente</li>
             </ol>
 
             <h3>Navegar por los dias</h3>
-            <ul>
-                <li>Pulsa en las pestanyas de dia (Lun, Mar, Mie...) para ver cada dia</li>
-                <li>Cada comida muestra los alimentos con sus cantidades</li>
-            </ul>
+            <p>Usa las pestanyas en la parte superior (Lun, Mar, Mie, Jue, Vie, Sab, Dom) para ver las comidas de cada dia.</p>
 
             <h3>Marcar comidas completadas</h3>
             <ul>
-                <li>Pulsa el circulo junto a cada comida para marcarla como completada</li>
-                <li>Puedes ver tu porcentaje de cumplimiento</li>
+                <li>Pulsa el circulo junto a cada comida para marcarla como completada (aparece un check verde)</li>
+                <li>Vuelve a pulsar para desmarcarla</li>
+                <li>El porcentaje de cumplimiento se actualiza automaticamente en el dashboard</li>
             </ul>
 
-            <h3>Anadir/eliminar comidas</h3>
-            <ul>
-                <li><strong>+ Anadir comida</strong>: Selecciona tipo (Desayuno, Almuerzo, etc.) y descripcion</li>
-                <li><strong>X</strong>: Elimina una comida del plan</li>
-            </ul>
+            <h3>Completar dia entero</h3>
+            <p>Pulsa el boton <strong>Completar dia</strong> para marcar todas las comidas del dia actual como completadas de golpe. Si ya estan todas completadas, las desmarca.</p>
 
-            <h3>Exportar a PDF</h3>
+            <h3>Anadir comidas al plan</h3>
+            <ol>
+                <li>Pulsa <strong>+ Anadir comida</strong></li>
+                <li>Selecciona el tipo de comida (Desayuno, Almuerzo, etc.)</li>
+                <li>Escribe la descripcion (ej: "Pollo a la plancha 200g, arroz integral 150g")</li>
+                <li>Pulsa <strong>Guardar</strong></li>
+            </ol>
+
+            <h3>Eliminar comidas</h3>
+            <p>Pulsa el boton <strong>X</strong> junto a cualquier comida para eliminarla del plan.</p>
+
+            <h3>Cambiar entre planes</h3>
+            <p>Si tienes varios planes, usa el desplegable en la parte superior de la pagina de Plan para seleccionar el plan que quieres ver.</p>
+
+            <h3>Repetir plan</h3>
+            <p>Si tu plan tiene una dieta asociada, aparece el boton <strong>Repetir</strong>. Al pulsarlo:</p>
             <ul>
-                <li>Pulsa <strong>Descargar PDF</strong> para generar un PDF con tu plan semanal completo</li>
+                <li>Si la semana del plan ya ha pasado: crea un nuevo plan para el proximo lunes desde hoy</li>
+                <li>Si la semana del plan aun no ha terminado: crea el plan para la semana siguiente</li>
             </ul>
+            <div class="tip">No se pueden crear dos planes para la misma semana. Si ya existe uno, el sistema te avisara.</div>
+
+            <h3>Exportar plan a PDF</h3>
+            <p>Pulsa <strong>Descargar PDF</strong> para generar un documento PDF con tu plan semanal completo, listo para imprimir.</p>
+
+            <h3>Eliminar plan</h3>
+            <p>Pulsa el boton <strong>Eliminar</strong> para borrar el plan completo (incluye todos los dias, comidas y lista de la compra asociada).</p>
         </div>
 
-        <div class="section">
-            <h2>3. Lista de la Compra <span class="badge badge-new">Mejorado</span></h2>
-            <p>Genera automaticamente la lista de ingredientes necesarios para toda la semana.</p>
+        <!-- 5. LISTA DE LA COMPRA -->
+        <div class="section" id="compra">
+            <h2>5. Lista de la compra</h2>
+            <p>Se genera automaticamente a partir de tu plan semanal activo, agrupando todos los ingredientes que necesitas.</p>
 
             <h3>Generar lista</h3>
             <ul>
-                <li>Ve a la seccion <strong>Compra</strong></li>
+                <li>Ve a la seccion <strong>Compra</strong> en la barra de navegacion inferior</li>
                 <li>La lista se genera automaticamente del plan activo</li>
-                <li>Los items se agrupan por categoria (Proteinas, Carbohidratos, Grasas, Verduras, Frutas, Bebidas, Suplementos, Condimentos)</li>
+                <li>Si no hay lista, pulsa <strong>Generar lista</strong></li>
             </ul>
+
+            <h3>Categorias</h3>
+            <p>Los items se agrupan automaticamente por categoria: Proteinas, Carbohidratos, Grasas, Verduras, Frutas, Bebidas, Suplementos, Condimentos y Otros.</p>
 
             <h3>Cantidades semanales</h3>
             <ul>
                 <li>Cada item muestra la cantidad total necesaria para toda la semana</li>
-                <li>Las cantidades se suman automaticamente (ej: 7 x 100G = 700G)</li>
-                <li>Al final de la lista hay un resumen <strong>Total semanal</strong> con todas las cantidades</li>
+                <li>Las cantidades iguales se suman automaticamente (ej: 7 x 100g = 700g)</li>
+                <li>Al final hay un resumen con el total de items por categoria</li>
             </ul>
 
-            <h3>Gestionar items</h3>
-            <ul>
-                <li><strong>Anadir item</strong>: Escribe el nombre y cantidad, pulsa +</li>
-                <li><strong>Marcar comprado</strong>: Pulsa el circulo junto al item</li>
-                <li><strong>Eliminar item</strong>: Pulsa X junto al item</li>
-                <li><strong>Regenerar lista</strong>: Recalcula desde el plan (mantiene items manuales)</li>
-            </ul>
-            <div class="tip">Los items anadidos manualmente se mantienen al regenerar la lista. Util para cosas que ya tienes en la despensa o que quieras anadir extra.</div>
+            <h3>Marcar como comprado</h3>
+            <p>Pulsa el circulo junto a cada item para marcarlo como comprado. Util para ir tachando en el supermercado.</p>
+
+            <h3>Anadir item manual</h3>
+            <p>Escribe el nombre y cantidad de un producto extra y pulsa <strong>+</strong> para anadirlo a la lista.</p>
+
+            <h3>Eliminar item</h3>
+            <p>Pulsa <strong>X</strong> junto a cualquier item para eliminarlo.</p>
+
+            <h3>Regenerar lista</h3>
+            <p>Pulsa <strong>Regenerar</strong> para recalcular la lista desde el plan actual. Los items anadidos manualmente se mantienen.</p>
         </div>
 
-        <div class="section">
-            <h2>4. Registro de Peso</h2>
-            <p>Lleva un seguimiento de tu peso a lo largo del tiempo.</p>
-            <ul>
+        <!-- 6. CONTROL DE PESO -->
+        <div class="section" id="peso">
+            <h2>6. Control de peso</h2>
+            <p>Lleva un seguimiento de tu peso a lo largo del tiempo para ver tu evolucion.</p>
+
+            <h3>Registrar peso</h3>
+            <ol>
                 <li>Ve a la seccion <strong>Peso</strong></li>
-                <li>Introduce tu peso actual</li>
-                <li>Consulta el historico con grafico de evolucion</li>
-            </ul>
-        </div>
+                <li>Pulsa <strong>+ Anadir</strong></li>
+                <li>Introduce tu peso en kg (acepta decimales, ej: 72.5)</li>
+                <li>Selecciona la fecha (por defecto es hoy)</li>
+                <li>Opcionalmente anade una nota (ej: "Despues de desayunar")</li>
+            </ol>
 
-        <div class="section">
-            <h2>5. Perfil</h2>
+            <h3>Ver historial</h3>
+            <p>La lista muestra todos tus registros ordenados del mas reciente al mas antiguo, con:</p>
             <ul>
-                <li><strong>Datos personales</strong>: Nombre, email</li>
-                <li><strong>Verificacion 2FA</strong>: Activa la autenticacion en dos pasos con una app como Google Authenticator</li>
-                <li><strong>Cerrar sesion</strong></li>
+                <li>Fecha y peso</li>
+                <li>Flechas de tendencia: subida, bajada o mantenimiento</li>
+                <li>Notas si las hay</li>
             </ul>
+
+            <h3>Eliminar registro</h3>
+            <p>Pulsa el boton de eliminar junto a cualquier registro para borrarlo.</p>
+
+            <div class="tip">Solo puedes registrar un peso por dia. Si intentas registrar otro el mismo dia, se actualizara el existente.</div>
         </div>
 
-        <div class="section">
-            <h2>6. Panel de Administracion <span class="badge badge-admin">Admin</span></h2>
-            <p>Solo visible para usuarios con rol de administrador.</p>
+        <!-- 7. PERFIL -->
+        <div class="section" id="perfil">
+            <h2>7. Perfil y seguridad</h2>
+
+            <h3>Datos personales</h3>
+            <ul>
+                <li><strong>Usuario</strong> - Tu nombre de usuario (no se puede cambiar)</li>
+                <li><strong>Email</strong> - Puedes actualizar tu email</li>
+                <li>Pulsa <strong>Guardar cambios</strong> para confirmar</li>
+            </ul>
+
+            <h3>Cambiar contrasenya</h3>
+            <ol>
+                <li>Introduce tu contrasenya actual</li>
+                <li>Introduce la nueva contrasenya (mismos requisitos que al registrarte)</li>
+                <li>Pulsa <strong>Cambiar contrasenya</strong></li>
+            </ol>
+
+            <h3>Autenticacion 2FA</h3>
+            <p>Desde aqui puedes activar o desactivar la verificacion en dos pasos. Ver seccion <a href="#cuenta">Cuenta y acceso</a> para mas detalles.</p>
+        </div>
+
+        <!-- 8. ADMIN -->
+        <div class="section" id="admin">
+            <h2>8. Panel de administracion <span class="badge badge-admin">Admin</span></h2>
+            <p>Solo visible para usuarios con rol de administrador o superior.</p>
 
             <h3>Gestion de usuarios</h3>
+            <p>Lista de todos los usuarios del sistema con acciones disponibles:</p>
             <ul>
-                <li><strong>Crear usuario</strong>: Nombre, email, contrasenya, rol</li>
-                <li><strong>Editar usuario</strong>: Modificar datos y rol</li>
-                <li><strong>Eliminar usuario</strong></li>
-                <li><strong>Impersonar</strong>: Entrar como otro usuario para ver su plan y datos</li>
+                <li><strong>Crear usuario</strong> - Nombre, email, contrasenya y rol</li>
+                <li><strong>Editar</strong> - Modificar email, rol y estado activo/inactivo</li>
+                <li><strong>Reset pass</strong> - Establecer nueva contrasenya para un usuario</li>
+                <li><strong>Impersonar</strong> - Entrar como otro usuario para ver su plan y datos (util para soporte)</li>
+                <li><strong>Eliminar</strong> - Borrar usuario y todos sus datos</li>
             </ul>
+            <div class="warning">Al impersonar un usuario, tu sesion se reemplaza por la del usuario seleccionado. Para volver, cierra sesion y entra con tu cuenta de admin.</div>
 
             <h3>Roles disponibles</h3>
             <ul>
-                <li><strong>User</strong>: Usuario estandar, acceso a su propio plan</li>
-                <li><strong>Superuser</strong>: Acceso a funciones avanzadas</li>
-                <li><strong>SuperUserMaster</strong>: Acceso total al panel de administracion</li>
+                <li><strong>User</strong> <span class="badge badge-user">Estandar</span> - Acceso a su propio plan, dietas, peso y compra</li>
+                <li><strong>Superuser</strong> <span class="badge badge-admin">Admin</span> - Acceso a funciones avanzadas y panel de admin</li>
+                <li><strong>SuperUserMaster</strong> <span class="badge badge-master">Master</span> - Acceso total: crear/editar/eliminar usuarios, base de datos, impersonar</li>
             </ul>
         </div>
 
-        <div class="section">
-            <h2>7. Tipos de Comida</h2>
-            <ul>
-                <li><strong style="color:#ff6b00">Pre Desayuno</strong> - Antes de entrenar</li>
-                <li><strong style="color:#ff9800">Desayuno</strong></li>
-                <li><strong style="color:#ffc107">Media Manana</strong></li>
-                <li><strong style="color:#4caf50">Almuerzo</strong></li>
-                <li><strong style="color:#009688">Comida</strong> - Comida principal</li>
-                <li><strong style="color:#2196f3">Merienda</strong></li>
-                <li><strong style="color:#9c27b0">Cena</strong></li>
-            </ul>
-        </div>
-
-        <div class="section">
-            <h2>8. Base de Datos <span class="badge badge-admin">SuperUserMaster</span></h2>
-            <p>Solo disponible para usuarios con rol SuperUserMaster.</p>
+        <!-- 9. BASE DE DATOS -->
+        <div class="section" id="db">
+            <h2>9. Base de datos <span class="badge badge-master">SuperUserMaster</span></h2>
+            <p>Herramientas avanzadas solo disponibles para SuperUserMaster.</p>
 
             <h3>Explorador de tablas</h3>
             <ul>
                 <li>Ver todas las tablas de la base de datos</li>
-                <li>Navegar por los registros de cada tabla con paginacion</li>
+                <li>Navegar por los registros con paginacion</li>
+                <li>Ver columnas con tipos de datos e indicador de clave primaria</li>
                 <li>Eliminar registros individuales</li>
             </ul>
 
@@ -184,22 +366,71 @@
             <ul>
                 <li>Ejecutar consultas SQL directamente (SELECT, INSERT, UPDATE, DELETE)</li>
                 <li>Ver resultados en formato tabla</li>
-                <li>Operaciones peligrosas (DROP DATABASE, ATTACH) estan bloqueadas por seguridad</li>
+                <li>Ver numero de filas afectadas en operaciones de escritura</li>
             </ul>
+            <div class="warning">Por seguridad, las operaciones DROP DATABASE, ATTACH y DETACH estan bloqueadas.</div>
         </div>
 
-        <div class="section">
-            <h2>9. Notificaciones de Actualizacion</h2>
-            <p>Cuando se despliega una nueva version de la aplicacion, aparece automaticamente un popup informando de la actualizacion disponible.</p>
+        <!-- 10. OFFLINE -->
+        <div class="section" id="offline">
+            <h2>10. Modo offline y PWA</h2>
+            <p>EatHealthyCycle funciona como una aplicacion instalable (PWA) y tiene soporte offline limitado.</p>
+
+            <h3>Instalar como app</h3>
+            <p>En tu navegador movil o de escritorio, busca la opcion <strong>"Instalar aplicacion"</strong> o <strong>"Anadir a pantalla de inicio"</strong>. La app se abrira como una aplicacion nativa sin barra de navegacion del navegador.</p>
+
+            <h3>Funcionamiento offline</h3>
             <ul>
-                <li>El popup muestra la nueva version</li>
-                <li>Pulsa <strong>Actualizar</strong> para recargar la app con la ultima version</li>
-                <li>Pulsa <strong>Ahora no</strong> para continuar con la version actual</li>
+                <li>Los datos que ya hayas cargado (dietas, planes, lista de compra, peso) se guardan en cache y estan disponibles sin conexion</li>
+                <li>Puedes marcar comidas como completadas y tachar items de la compra sin conexion</li>
+                <li>Las acciones realizadas offline se guardan en una cola de sincronizacion</li>
+                <li>Cuando vuelva la conexion, se sincronizan automaticamente con el servidor</li>
+            </ul>
+
+            <h3>Indicador offline</h3>
+            <p>Cuando no hay conexion, aparece una barra naranja en la parte superior indicando el modo offline y el numero de acciones pendientes de sincronizar.</p>
+        </div>
+
+        <!-- 11. PORTAL -->
+        <div class="section" id="portal">
+            <h2>11. Portal de aplicaciones</h2>
+            <p>Pulsa el boton <strong>Apps</strong> en la esquina superior derecha del dashboard para acceder al portal de aplicaciones. Desde ahi puedes navegar entre:</p>
+            <ul>
+                <li><strong>EatHealthyCycle</strong> - Esta aplicacion de dietas y nutricion</li>
+                <li><strong>FitCycle</strong> - Aplicacion de entrenamiento y ejercicio</li>
             </ul>
         </div>
 
-        <a href="/" class="back-link">Volver a la app</a>
-        <div class="version">EatHealthyCycle v1.0.3 - Actualizado 2026-03-08</div>
+        <!-- 12. ACTUALIZACIONES -->
+        <div class="section" id="actualizaciones">
+            <h2>12. Actualizaciones</h2>
+            <p>Cuando se despliega una nueva version de la aplicacion:</p>
+            <ul>
+                <li>Aparece automaticamente un popup informando de la nueva version</li>
+                <li>Pulsa <strong>Actualizar ahora</strong> para recargar con la ultima version</li>
+                <li>Pulsa <strong>Mas tarde</strong> para continuar con la version actual</li>
+            </ul>
+            <p>La version actual se muestra debajo del titulo <strong>EatHealthyCycle</strong> en el dashboard (ej: v1.1.2).</p>
+            <p>El indicador <strong>(P)</strong> significa Production y <strong>(D)</strong> significa Develop.</p>
+        </div>
+
+        <!-- 13. TIPOS DE COMIDA -->
+        <div class="section" id="comidas">
+            <h2>13. Tipos de comida</h2>
+            <p>La aplicacion soporta 7 tipos de comida, cada uno con su color identificativo:</p>
+            <ul>
+                <li><span class="meal-color" style="background:#ff6b00"></span> <strong>Pre Desayuno</strong> - Antes de entrenar o primera hora</li>
+                <li><span class="meal-color" style="background:#ff9800"></span> <strong>Desayuno</strong></li>
+                <li><span class="meal-color" style="background:#ffc107"></span> <strong>Media Manana</strong> - Snack de media manana</li>
+                <li><span class="meal-color" style="background:#4caf50"></span> <strong>Almuerzo</strong></li>
+                <li><span class="meal-color" style="background:#009688"></span> <strong>Comida</strong> - Comida principal del mediodia</li>
+                <li><span class="meal-color" style="background:#2196f3"></span> <strong>Merienda</strong></li>
+                <li><span class="meal-color" style="background:#9c27b0"></span> <strong>Cena</strong></li>
+            </ul>
+        </div>
+
+        <a href="/" class="back-link">Volver a la aplicacion</a>
+        <div class="version">EatHealthyCycle v1.1.2 - Actualizado 2026-03-30</div>
     </div>
 </body>
 </html>
