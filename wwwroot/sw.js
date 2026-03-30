@@ -1,4 +1,4 @@
-const CACHE = 'eatcycle-v19';
+const CACHE = 'eatcycle-v20';
 const API_CACHE = 'eatcycle-api-v3';
 const SHELL = ['/', '/css/app.css', '/js/offline.js', '/js/api.js', '/js/app.js'];
 
@@ -18,7 +18,13 @@ function isApiCall(url) {
 
 self.addEventListener('install', e => {
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
+  e.waitUntil(
+    caches.open(CACHE).then(c =>
+      Promise.all(SHELL.map(url =>
+        fetch(url, { cache: 'no-store' }).then(r => c.put(url, r))
+      ))
+    )
+  );
 });
 
 self.addEventListener('activate', e => {
