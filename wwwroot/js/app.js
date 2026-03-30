@@ -1,5 +1,6 @@
 const App = {
     currentPage: null,
+    pageHistory: [],
     currentPlan: null,
     currentDayIndex: 0,
 
@@ -40,6 +41,9 @@ const App = {
     },
 
     showPage(name) {
+        if (this.currentPage && this.currentPage !== name && this.currentPage !== 'login' && this.currentPage !== 'register') {
+            this.pageHistory.push(this.currentPage);
+        }
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         const page = document.getElementById(`page-${name}`);
         if (page) page.classList.add('active');
@@ -49,6 +53,21 @@ const App = {
         const bottomNav = document.getElementById('bottom-nav');
         if (bottomNav) bottomNav.style.display = name === 'login' || name === 'register' ? 'none' : 'flex';
         this.currentPage = name;
+        const backBtn = document.getElementById('btn-back');
+        if (backBtn) backBtn.style.display = (name === 'dashboard' || name === 'login' || name === 'register') ? 'none' : 'flex';
+    },
+
+    goBack() {
+        const prev = this.pageHistory.pop() || 'dashboard';
+        this.showPage(prev);
+        if (prev === 'dashboard') this.loadDashboard();
+        if (prev === 'plan') this.loadPlan();
+        if (prev === 'peso') this.loadPeso();
+        if (prev === 'compra') this.loadCompra();
+        if (prev === 'perfil') this.loadPerfil();
+        if (prev === 'admin') this.loadAdmin();
+        // After navigating back, remove the entry showPage just added (avoid ping-pong)
+        this.pageHistory.pop();
     },
 
     bindNav() {
