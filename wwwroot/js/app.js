@@ -1165,6 +1165,8 @@ const App = {
                 badge.textContent = data.env === 'develop' ? '(D)' : '(P)';
                 badge.style.cssText = 'font-size:1em;vertical-align:middle;font-weight:bold;';
             }
+            const versionEl = document.getElementById('app-version');
+            if (versionEl) versionEl.textContent = `v${data.version}`;
         } catch { /* ignore */ }
     },
 

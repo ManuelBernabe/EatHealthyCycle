@@ -27,3 +27,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 - `/auth/*` — Authentication
 - `/api/*` — Main API routes
+
+## Deployment Rules
+
+- **Version bump required on every deploy**: Before committing changes that will be deployed, always increment the `AppVersion` constant in `Controllers/VersionController.cs`. Use semantic versioning (MAJOR.MINOR.PATCH). Increment PATCH for fixes, MINOR for new features, MAJOR for breaking changes.
