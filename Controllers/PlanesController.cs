@@ -201,15 +201,14 @@ public class PlanesController : ControllerBase
     [HttpDelete("planes/{id}")]
     public async Task<IActionResult> Eliminar(int id)
     {
-        var plan = await _db.PlanesSemanal
-            .Include(p => p.Dias)
-                .ThenInclude(d => d.Comidas)
-            .Include(p => p.ItemsListaCompra)
-            .FirstOrDefaultAsync(p => p.Id == id);
+        var plan = await _db.PlanesSemanal.FindAsync(id);
         if (plan == null) return NotFound();
 
-        _db.PlanesSemanal.Remove(plan);
-        await _db.SaveChangesAsync();
+        // Explicitly delete children first to avoid FK issues with SQLite
+        await _db.PlanComidas.Where(pc => pc.PlanDia.PlanSemanalId == id).ExecuteDeleteAsync();
+        await _db.PlanDias.Where(pd => pd.PlanSemanalId == id).ExecuteDeleteAsync();
+        await _db.ItemsListaCompra.Where(i => i.PlanSemanalId == id).ExecuteDeleteAsync();
+        await _db.PlanesSemanal.Where(p => p.Id == id).ExecuteDeleteAsync();
 
         return NoContent();
     }

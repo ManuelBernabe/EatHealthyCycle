@@ -359,9 +359,22 @@ const App = {
     async repetirPlanSiguiente() {
         const plan = this.currentPlan;
         if (!plan || !plan.dietaId) return this.toast('Este plan no tiene dieta asociada', 'error');
-        // fechaInicio + 7 days = next Monday
-        const inicio = new Date(plan.fechaInicio);
-        const nextMonday = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + 7);
+        // Calculate next Monday from today (if today is Mon-Sat, advance to next Mon; if Sun, tomorrow)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dayOfWeek = today.getDay(); // 0=Sun,1=Mon,...
+        const planEnd = new Date(plan.fechaFin);
+        planEnd.setHours(0, 0, 0, 0);
+        let nextMonday;
+        if (today <= planEnd) {
+            // Plan week hasn't ended yet — advance to next week after plan
+            nextMonday = new Date(plan.fechaInicio);
+            nextMonday.setDate(nextMonday.getDate() + 7);
+        } else {
+            // Plan week already passed — use next Monday from today
+            const daysUntilMonday = dayOfWeek === 0 ? 1 : dayOfWeek === 1 ? 0 : 8 - dayOfWeek;
+            nextMonday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + daysUntilMonday);
+        }
         const y = nextMonday.getFullYear();
         const m = String(nextMonday.getMonth() + 1).padStart(2, '0');
         const d = String(nextMonday.getDate()).padStart(2, '0');
