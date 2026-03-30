@@ -55,9 +55,9 @@ self.addEventListener('fetch', e => {
       );
     }
   } else {
-    // App shell: network-first with cache fallback
+    // App shell: network-first with cache fallback, bypass HTTP cache
     e.respondWith(
-      fetch(e.request).then(res => {
+      fetch(e.request, { cache: 'no-store' }).then(res => {
         const clone = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, clone));
         return res;
