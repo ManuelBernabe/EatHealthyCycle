@@ -122,6 +122,27 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
 
+// Global exception handler — return JSON { error, type } so frontend can show the real message
+app.UseExceptionHandler(eh =>
+{
+    eh.Run(async ctx =>
+    {
+        var feature = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+        var ex = feature?.Error;
+        var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Unhandled exception on {Path}", ctx.Request.Path);
+
+        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        ctx.Response.ContentType = "application/json";
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            error = ex?.Message ?? "Error del servidor",
+            type = ex?.GetType().Name
+        });
+        await ctx.Response.WriteAsync(payload);
+    });
+});
+
 // Swagger
 app.UseSwagger();
 app.UseSwaggerUI();
