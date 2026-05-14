@@ -129,6 +129,7 @@ const API = {
     deleteComidaPlan: (comidaId) => API.request('DELETE', `/api/plancomidas/${comidaId}`),
     listarPlanes: (usuarioId) => API.request('GET', `/api/usuarios/${usuarioId}/planes`),
     obtenerPlan: (id) => API.request('GET', `/api/planes/${id}`),
+    refrescarPlan: (id) => API.request('POST', `/api/planes/${id}/refrescar`),
     eliminarPlan: (id) => API.request('DELETE', `/api/planes/${id}`),
     toggleComida: (id) => API.request('PUT', `/api/plancomidas/${id}/completar`),
     cumplimiento: (planId) => API.request('GET', `/api/planes/${planId}/cumplimiento`),

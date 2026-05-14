@@ -198,6 +198,16 @@ public class PlanesController : ControllerBase
         return new CumplimientoDto(total, completadas, porcentaje);
     }
 
+    [HttpPost("planes/{id}/refrescar")]
+    public async Task<IActionResult> Refrescar(int id)
+    {
+        var plan = await _db.PlanesSemanal.FindAsync(id);
+        if (plan == null) return NotFound();
+
+        var updated = await _planService.RefrescarDescripcionAsync(id);
+        return Ok(new { actualizadas = updated });
+    }
+
     [HttpDelete("planes/{id}")]
     public async Task<IActionResult> Eliminar(int id)
     {

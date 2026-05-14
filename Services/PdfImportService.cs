@@ -535,7 +535,9 @@ public class PdfImportService : IPdfImportService
             var lineText = string.Join(" ", cleanedParts).Trim();
 
             if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
-            if (IsNoiseLine(lineText) || IsMealTypeHeader(lineText)) continue;
+            // strict:false → keep cantidad-only lines like "(200 ml)" so they can merge
+            // with the food name on the previous line. Post-merge noise check stays strict.
+            if (IsNoiseLine(lineText, strict: false) || IsMealTypeHeader(lineText)) continue;
 
             cleanLines.Add((lineText, startsWithBullet));
         }
@@ -950,7 +952,13 @@ public class PdfImportService : IPdfImportService
 
     // ==================== NOISE FILTERS ====================
 
-    private static bool IsNoiseLine(string linea)
+    /// <summary>
+    /// Detects garbage lines from the PDF. Pass strict=false when checking a single
+    /// raw PDF line that could still be a cantidad continuation ("(200 ml)") of the
+    /// previous line; pass strict=true (default) once items are merged, to drop
+    /// standalone dosage blobs that never attached to a food name.
+    /// </summary>
+    private static bool IsNoiseLine(string linea, bool strict = true)
     {
         var l = linea.Trim().ToLowerInvariant();
         if (l.Length < 2) return true;
@@ -974,8 +982,9 @@ public class PdfImportService : IPdfImportService
             l.Contains("suplementación") || l.Contains("suplementacion") ||
             l.Contains("de dormir"))
             return true;
-        // Pure quantity/dosage items with no food name: "(300mg)", "(1000mg)", "(1G)"
-        if (Regex.IsMatch(l, @"^\(?\d+\s*(mg|g|ml|l|mcg)\)?$")) return true;
+        // Pure quantity/dosage items: "(300mg)", "(200 ml)", "(1G)". Only treat as noise
+        // post-merge — pre-merge they are usually a cantidad continuation of the line above.
+        if (strict && Regex.IsMatch(l, @"^\(?\d+\s*(mg|g|ml|l|mcg)\)?$")) return true;
         // Standalone prepositions or articles that got orphaned
         if (l.Length <= 3 && Prepositions.Contains(l.Trim())) return true;
         // Lines starting with "-" followed by meal names (Día off format: "-Desayuno ...", "-Comida ...")

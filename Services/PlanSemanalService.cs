@@ -14,6 +14,11 @@ public class PlanSemanalService : IPlanSemanalService
         _db = db;
     }
 
+    private static string BuildDescripcion(Comida comida) =>
+        string.Join(", ",
+            comida.Alimentos.Select(a =>
+                !string.IsNullOrWhiteSpace(a.Cantidad) ? $"{a.Nombre} ({a.Cantidad})" : a.Nombre));
+
     public async Task<PlanSemanal> GenerarPlanAsync(int usuarioId, int dietaId, DateTime fechaInicio)
     {
         // Ajustar al lunes más cercano
@@ -54,15 +59,11 @@ public class PlanSemanalService : IPlanSemanalService
             {
                 foreach (var comida in dietaDia.Comidas.OrderBy(c => c.Orden))
                 {
-                    var descripcion = string.Join(", ",
-                        comida.Alimentos.Select(a =>
-                            a.Cantidad != null ? $"{a.Nombre} ({a.Cantidad})" : a.Nombre));
-
                     planDia.Comidas.Add(new PlanComida
                     {
                         ComidaId = comida.Id,
                         Tipo = comida.Tipo,
-                        Descripcion = descripcion
+                        Descripcion = BuildDescripcion(comida)
                     });
                 }
             }
@@ -87,5 +88,31 @@ public class PlanSemanalService : IPlanSemanalService
         await _db.SaveChangesAsync();
 
         return plan;
+    }
+
+    public async Task<int> RefrescarDescripcionAsync(int planId)
+    {
+        var planComidas = await _db.PlanComidas
+            .Include(pc => pc.Comida)
+                .ThenInclude(c => c!.Alimentos)
+            .Where(pc => pc.PlanDia.PlanSemanalId == planId && pc.ComidaId != null)
+            .ToListAsync();
+
+        int updated = 0;
+        foreach (var pc in planComidas)
+        {
+            if (pc.Comida == null) continue;
+            var nueva = BuildDescripcion(pc.Comida);
+            if (pc.Descripcion != nueva)
+            {
+                pc.Descripcion = nueva;
+                updated++;
+            }
+        }
+
+        if (updated > 0)
+            await _db.SaveChangesAsync();
+
+        return updated;
     }
 }

@@ -406,6 +406,16 @@ const App = {
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
+    async refrescarPlanDesdeDieta() {
+        const plan = this.currentPlan;
+        if (!plan || !plan.dietaId) return this.toast('Este plan no tiene dieta asociada', 'error');
+        try {
+            const r = await API.refrescarPlan(plan.id);
+            this.toast(`Plan actualizado (${r.actualizadas} comidas)`);
+            this.loadPlan();
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
     renderPlan(plan, noScroll) {
         const days = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
         const mealTypes = {
@@ -459,6 +469,7 @@ const App = {
         const planes = this.allPlanes || [];
         let planSelectorHtml = '';
         const repeatBtn = plan.dietaId ? `<button class="btn btn-sm" style="background:#9C27B0;color:white;" onclick="App.repetirPlanSiguiente()">Repetir →</button>` : '';
+        const refreshBtn = plan.dietaId ? `<button class="btn btn-sm" style="background:#607D8B;color:white;" onclick="App.refrescarPlanDesdeDieta()" title="Recargar comidas desde la dieta">↻ Recargar</button>` : '';
         if (planes.length > 1) {
             planSelectorHtml = `<div style="padding:8px 16px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                 <select onchange="App.selectPlan(+this.value)" style="flex:1;padding:6px 8px;border-radius:8px;border:1px solid #ddd;min-width:150px;">
@@ -466,11 +477,13 @@ const App = {
                         ${new Date(p.fechaInicio).toLocaleDateString('es')} - ${new Date(p.fechaFin).toLocaleDateString('es')}
                     </option>`).join('')}
                 </select>
+                ${refreshBtn}
                 ${repeatBtn}
                 <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar</button>
             </div>`;
         } else {
             planSelectorHtml = `<div style="padding:8px 16px;display:flex;justify-content:flex-end;gap:6px;">
+                ${refreshBtn}
                 ${repeatBtn}
                 <button class="btn btn-danger btn-sm" onclick="App.borrarPlan(${plan.id})">Eliminar</button>
             </div>`;
