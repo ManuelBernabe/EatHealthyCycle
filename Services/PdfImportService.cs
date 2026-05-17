@@ -273,13 +273,19 @@ public class PdfImportService : IPdfImportService
             minMealSpacing = spacings.Min();
         }
 
+        // Meal labels sit at the TOP of each row in the diet table — content extends
+        // DOWN from the label until the next label. The old midpoint heuristic cut tall
+        // cells in half and pushed their bottom items into the next meal (DESAYUNO with
+        // 7 items leaking into ALMUERZO, etc.). Use "just above next label" instead so
+        // each meal owns the full vertical strip down to the next label's top edge.
+        const double labelBuffer = 8;
         for (int i = 0; i < sortedMeals.Count; i++)
         {
             var yTop = i == 0
                 ? sortedMeals[i].yCenter + 50
-                : (sortedMeals[i].yCenter + sortedMeals[i - 1].yCenter) / 2;
+                : sortedMeals[i].yCenter + labelBuffer;
             var yBottom = i + 1 < sortedMeals.Count
-                ? (sortedMeals[i].yCenter + sortedMeals[i + 1].yCenter) / 2
+                ? sortedMeals[i + 1].yCenter + labelBuffer
                 : Math.Max(0, sortedMeals[i].yCenter - minMealSpacing * 1.5);
 
             mealRows.Add((sortedMeals[i].tipo, yTop, yBottom));
