@@ -168,35 +168,45 @@ public class PdfImportService : IPdfImportService
 
         List<(int diaNum, double contentLeft, double contentRight)> dayColumns;
 
-        if (diaHeaders.Count > 0)
+        // Find INGREDIENTES column headers (used both to fill missing DIA labels and to set boundaries)
+        var ingredientesHeaders = allWords
+            .Where(w => CleanText(w.Text).Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
+            .Select(w => (xLeft: w.BoundingBox.Left, xRight: w.BoundingBox.Right, xCenter: (w.BoundingBox.Left + w.BoundingBox.Right) / 2))
+            .OrderBy(w => w.xLeft)
+            .ToList();
+
+        // Find INGESTA column headers (meal type labels column — separates day columns horizontally)
+        var ingestaHeaders = allWords
+            .Where(w => CleanText(w.Text).Equals("INGESTA", StringComparison.OrdinalIgnoreCase))
+            .Select(w => (xLeft: w.BoundingBox.Left, xRight: w.BoundingBox.Right, xCenter: (w.BoundingBox.Left + w.BoundingBox.Right) / 2))
+            .OrderBy(w => w.xLeft)
+            .ToList();
+
+        if (diaHeaders.Count > 0 || ingredientesHeaders.Count > 0)
         {
-            // This is a primary page with DIA headers
-            logger.LogInformation("Page {Page}: Found {Count} DIA headers: {Headers}",
-                page.Number, diaHeaders.Count,
-                string.Join(", ", diaHeaders.Select(h => $"DIA {h.diaNum} at X={h.xCenter:F0}")));
+            // Fill in synthetic day numbers for INGREDIENTES columns without a detected DIA label.
+            // E.g. "DIA DE PIERNA" (no digit) or "SABADO DIA OFF" before SABADO recognition.
+            int globalDayCursor = dias.Count > 0 ? dias.Keys.Max() + 1 : 1;
+            var resolvedDays = FillMissingDiaColumns(
+                diaHeaders,
+                ingredientesHeaders,
+                globalDayCursor);
 
-            // Find INGREDIENTES column headers
-            var ingredientesHeaders = allWords
-                .Where(w => CleanText(w.Text).Equals("INGREDIENTES", StringComparison.OrdinalIgnoreCase))
-                .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
-                .OrderBy(w => w.xLeft)
-                .ToList();
+            if (resolvedDays.Count == 0)
+            {
+                // No INGREDIENTES and no DIA — page is not a meal table
+                return (previousColumns, null);
+            }
 
-            // Define column boundaries for each day
-            // Strategy: use INGREDIENTES headers to define left boundary,
-            // and midpoint between consecutive INGREDIENTES headers (or next DIA's INGESTA) for right boundary.
+            logger.LogInformation("Page {Page}: {Count} day columns resolved: {Headers}",
+                page.Number, resolvedDays.Count,
+                string.Join(", ", resolvedDays.Select(h => $"DIA {h.diaNum}{(h.synthetic ? "*" : "")} at X={h.xCenter:F0}")));
+
             dayColumns = new List<(int diaNum, double contentLeft, double contentRight)>();
 
-            // Find INGESTA column headers (meal type labels column)
-            var ingestaHeaders = allWords
-                .Where(w => CleanText(w.Text).Equals("INGESTA", StringComparison.OrdinalIgnoreCase))
-                .Select(w => new { xLeft = w.BoundingBox.Left, xRight = w.BoundingBox.Right, xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2 })
-                .OrderBy(w => w.xLeft)
-                .ToList();
-
-            for (int i = 0; i < diaHeaders.Count; i++)
+            for (int i = 0; i < resolvedDays.Count; i++)
             {
-                var dia = diaHeaders[i];
+                var dia = resolvedDays[i];
                 var closestIngr = ingredientesHeaders
                     .Where(ig => Math.Abs(ig.xCenter - dia.xCenter) < 200)
                     .OrderBy(ig => Math.Abs(ig.xCenter - dia.xCenter))
@@ -204,31 +214,35 @@ public class PdfImportService : IPdfImportService
 
                 double contentLeft, contentRight;
 
-                if (closestIngr != null)
+                if (closestIngr.xLeft > 0 || closestIngr.xRight > 0)
                 {
                     contentLeft = closestIngr.xLeft - 30;
 
-                    // Right boundary: use the INGESTA header of the NEXT day column if available,
-                    // otherwise use midpoint between current and next DIA headers, otherwise page width
-                    if (i + 1 < diaHeaders.Count)
-                    {
-                        var nextIngesta = ingestaHeaders
-                            .Where(ig => ig.xCenter > closestIngr.xCenter + 50)
-                            .OrderBy(ig => ig.xLeft)
-                            .FirstOrDefault();
-                        contentRight = nextIngesta != null
-                            ? nextIngesta.xLeft - 5
-                            : (dia.xCenter + diaHeaders[i + 1].xCenter) / 2;
-                    }
+                    // Right boundary: prefer the INGESTA header of the next column, otherwise
+                    // the next INGREDIENTES column, otherwise page width. This keeps the rightmost
+                    // column from absorbing content from an undetected column to its right.
+                    var nextIngesta = ingestaHeaders
+                        .Where(ig => ig.xCenter > closestIngr.xCenter + 50)
+                        .OrderBy(ig => ig.xLeft)
+                        .FirstOrDefault();
+                    var nextIngr = ingredientesHeaders
+                        .Where(ig => ig.xCenter > closestIngr.xCenter + 50)
+                        .OrderBy(ig => ig.xLeft)
+                        .FirstOrDefault();
+
+                    if (nextIngesta.xLeft > 0)
+                        contentRight = nextIngesta.xLeft - 5;
+                    else if (nextIngr.xLeft > 0)
+                        contentRight = nextIngr.xLeft - 5;
+                    else if (i + 1 < resolvedDays.Count)
+                        contentRight = (dia.xCenter + resolvedDays[i + 1].xCenter) / 2;
                     else
-                    {
                         contentRight = page.Width;
-                    }
                 }
                 else
                 {
                     var pageWidth = page.Width;
-                    var colWidth = pageWidth / diaHeaders.Count;
+                    var colWidth = pageWidth / resolvedDays.Count;
                     contentLeft = dia.xCenter - colWidth / 4;
                     contentRight = dia.xCenter + colWidth / 2;
                 }
@@ -605,6 +619,23 @@ public class PdfImportService : IPdfImportService
 
     // ==================== HEADER DETECTION ====================
 
+    /// <summary>
+    /// Day-name words that identify a column without a numeric "DIA N" label.
+    /// E.g. "SABADO DIA OFF" → Saturday, "DOMINGO DIA LIBRE" → Sunday.
+    /// </summary>
+    private static readonly Dictionary<string, int> DayNameToDiaNum = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LUNES"] = 1, ["MARTES"] = 2, ["MIERCOLES"] = 3, ["MIÉRCOLES"] = 3,
+        ["JUEVES"] = 4, ["VIERNES"] = 5, ["SABADO"] = 6, ["SÁBADO"] = 6,
+        ["DOMINGO"] = 7
+    };
+
+    /// <summary>
+    /// Find day headers. ONLY checks the IMMEDIATE next word for a digit
+    /// to avoid cross-column false matches (e.g. "DIA DE PIERNA DIA 2 PIERNA"
+    /// must NOT match the first DIA with the "2" four positions away).
+    /// Also recognises day-name labels (SABADO/DOMINGO/etc.) as alternate headers.
+    /// </summary>
     private static List<(int diaNum, double xLeft, double xCenter)> FindDiaHeaders(List<Word> words)
     {
         var result = new List<(int diaNum, double xLeft, double xCenter)>();
@@ -613,27 +644,76 @@ public class PdfImportService : IPdfImportService
         {
             var w = words[i];
             var cleanW = CleanText(w.Text);
-            if (!Regex.IsMatch(cleanW, @"^DIA$|^D[ÍI]A$", RegexOptions.IgnoreCase))
-                continue;
 
-            for (int j = i + 1; j < Math.Min(i + 5, words.Count); j++)
+            // Pattern A: explicit "DIA N" with N in immediate next word
+            if (Regex.IsMatch(cleanW, @"^DIA$|^D[ÍI]A$", RegexOptions.IgnoreCase) && i + 1 < words.Count)
             {
-                var next = words[j];
-                if (Math.Abs(next.BoundingBox.Bottom - w.BoundingBox.Bottom) > 15)
-                    continue;
-
-                var cleanNext = CleanText(next.Text);
-                if (int.TryParse(cleanNext, out var num) && num >= 1 && num <= 7)
+                var next = words[i + 1];
+                if (Math.Abs(next.BoundingBox.Bottom - w.BoundingBox.Bottom) <= 15)
                 {
-                    var xCenter = (w.BoundingBox.Left + next.BoundingBox.Right) / 2;
-                    if (!result.Any(r => r.diaNum == num))
-                        result.Add((num, w.BoundingBox.Left, xCenter));
-                    break;
+                    var cleanNext = CleanText(next.Text);
+                    if (int.TryParse(cleanNext, out var num) && num >= 1 && num <= 7)
+                    {
+                        var xCenter = (w.BoundingBox.Left + next.BoundingBox.Right) / 2;
+                        if (!result.Any(r => r.diaNum == num))
+                            result.Add((num, w.BoundingBox.Left, xCenter));
+                        continue;
+                    }
                 }
+            }
+
+            // Pattern B: weekday name (SABADO, DOMINGO, etc.) used as a column label
+            if (DayNameToDiaNum.TryGetValue(cleanW, out var dayNum))
+            {
+                var xCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                if (!result.Any(r => r.diaNum == dayNum))
+                    result.Add((dayNum, w.BoundingBox.Left, xCenter));
             }
         }
 
         return result.OrderBy(r => r.xLeft).ToList();
+    }
+
+    /// <summary>
+    /// Fill in synthetic day numbers for INGREDIENTES columns that have no detected
+    /// DIA header. Numbers are assigned sequentially, choosing the next unused day
+    /// number that fits with the surrounding detected columns.
+    /// E.g. detected = [day 2 at x=400, day 3 at x=700] with an INGREDIENTES at x=100
+    /// → synthesise day 1 at x=100.
+    /// </summary>
+    private static List<(int diaNum, double xLeft, double xCenter, bool synthetic)> FillMissingDiaColumns(
+        List<(int diaNum, double xLeft, double xCenter)> detected,
+        List<(double xLeft, double xRight, double xCenter)> ingredientesColumns,
+        int globalDayCursor)
+    {
+        var withSynthetic = detected
+            .Select(d => (d.diaNum, d.xLeft, d.xCenter, synthetic: false))
+            .ToList();
+
+        if (ingredientesColumns.Count <= detected.Count) return withSynthetic;
+
+        // Identify INGREDIENTES columns that don't already have a detected DIA nearby
+        var unmatchedIngr = ingredientesColumns
+            .Where(ig => !detected.Any(d => Math.Abs(d.xCenter - ig.xCenter) < 150))
+            .OrderBy(ig => ig.xLeft)
+            .ToList();
+
+        // Track used day numbers across the whole import
+        var used = new HashSet<int>(detected.Select(d => d.diaNum));
+        int cursor = Math.Max(1, globalDayCursor);
+
+        foreach (var ig in unmatchedIngr)
+        {
+            // Pick the next unused day number ≤ 7
+            while (cursor <= 7 && used.Contains(cursor)) cursor++;
+            if (cursor > 7) break;
+
+            used.Add(cursor);
+            withSynthetic.Add((cursor, ig.xLeft, ig.xCenter, true));
+            cursor++;
+        }
+
+        return withSynthetic.OrderBy(d => d.xLeft).ToList();
     }
 
     private static List<(TipoComida tipo, double yCenter, double xCenter)> FindMealLabels(List<Word> words)
