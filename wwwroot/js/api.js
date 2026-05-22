@@ -145,6 +145,16 @@ const API = {
     toggleComprado: (itemId) => API.request('PUT', `/api/lista-compra/${itemId}`),
     addItemCompra: (planId, nombre, cantidad, categoria) => API.request('POST', `/api/planes/${planId}/lista-compra/item`, { nombre, cantidad, categoria }),
     deleteItemCompra: (itemId) => API.request('DELETE', `/api/lista-compra/${itemId}`),
+    exportarListaCompraPdf: async (planId) => {
+        const res = await fetch(`/api/planes/${planId}/lista-compra/pdf`, {
+            headers: API.token ? { 'Authorization': `Bearer ${API.token}` } : {}
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: 'Error del servidor' }));
+            throw new Error(err.error || 'No se pudo generar el PDF');
+        }
+        return await res.blob();
+    },
 
     // Admin - Users
     listarUsuarios: () => API.request('GET', '/users'),

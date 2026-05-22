@@ -555,6 +555,66 @@ public class DietasControllerManualTests : IDisposable
 }
 
 // ══════════════════════════════════════════════════════
+//  PdfExportService — Lista de la compra PDF
+// ══════════════════════════════════════════════════════
+
+public class PdfExportServiceListaCompraTests
+{
+    public PdfExportServiceListaCompraTests()
+    {
+        QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+    }
+
+    [Fact]
+    public void GenerarListaCompraPdf_ProducesPdf_WithItemsGroupedByCategory()
+    {
+        var plan = new PlanSemanal
+        {
+            Id = 1,
+            UsuarioId = 1,
+            FechaInicio = new DateTime(2026, 5, 18),
+            FechaFin = new DateTime(2026, 5, 24),
+            Dieta = new Dieta { Nombre = "Dieta Test", UsuarioId = 1, FechaImportacion = DateTime.UtcNow }
+        };
+
+        var items = new List<ItemListaCompra>
+        {
+            new() { Nombre = "Pollo", Cantidad = "500g", Categoria = "Proteínas", PlanSemanalId = 1 },
+            new() { Nombre = "Arroz", Cantidad = "1kg", Categoria = "Carbohidratos", PlanSemanalId = 1 },
+            new() { Nombre = "Sal", Cantidad = "", Categoria = "Condimentos", PlanSemanalId = 1 }
+        };
+
+        var service = new PdfExportService();
+        var pdf = service.GenerarListaCompraPdf(plan, items);
+
+        Assert.NotNull(pdf);
+        Assert.True(pdf.Length > 1000, $"PDF parece vacío: {pdf.Length} bytes");
+        // PDF magic header
+        Assert.Equal((byte)'%', pdf[0]);
+        Assert.Equal((byte)'P', pdf[1]);
+        Assert.Equal((byte)'D', pdf[2]);
+        Assert.Equal((byte)'F', pdf[3]);
+    }
+
+    [Fact]
+    public void GenerarListaCompraPdf_EmptyList_StillGeneratesPdf()
+    {
+        var plan = new PlanSemanal
+        {
+            Id = 1,
+            FechaInicio = DateTime.Today,
+            FechaFin = DateTime.Today.AddDays(6)
+        };
+
+        var service = new PdfExportService();
+        var pdf = service.GenerarListaCompraPdf(plan, new List<ItemListaCompra>());
+
+        Assert.NotNull(pdf);
+        Assert.True(pdf.Length > 500);
+    }
+}
+
+// ══════════════════════════════════════════════════════
 //  AlimentosController — search endpoint
 // ══════════════════════════════════════════════════════
 

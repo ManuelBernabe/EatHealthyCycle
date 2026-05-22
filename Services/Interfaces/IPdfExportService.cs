@@ -5,4 +5,5 @@ namespace EatHealthyCycle.Services.Interfaces;
 public interface IPdfExportService
 {
     byte[] GenerarPlanSemanalPdf(PlanSemanal plan);
+    byte[] GenerarListaCompraPdf(PlanSemanal plan, List<ItemListaCompra> items);
 }

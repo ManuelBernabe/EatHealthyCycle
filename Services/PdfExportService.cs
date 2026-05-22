@@ -131,4 +131,74 @@ public class PdfExportService : IPdfExportService
 
         return document.GeneratePdf();
     }
+
+    public byte[] GenerarListaCompraPdf(PlanSemanal plan, List<ItemListaCompra> items)
+    {
+        var porCategoria = items
+            .GroupBy(i => string.IsNullOrWhiteSpace(i.Categoria) ? "Otros" : i.Categoria)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        var dietaNombre = plan.Dieta?.Nombre ?? "Plan manual";
+
+        var document = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Size(PageSizes.A4);
+                page.Margin(1.5f, Unit.Centimetre);
+                page.DefaultTextStyle(x => x.FontSize(10));
+
+                page.Header().Column(col =>
+                {
+                    col.Item().Text("Lista de la compra")
+                        .FontSize(18).Bold().FontColor(Colors.Green.Darken2);
+                    col.Item().Text($"{dietaNombre} · {plan.FechaInicio:dd/MM/yyyy} - {plan.FechaFin:dd/MM/yyyy}")
+                        .FontSize(10).FontColor(Colors.Grey.Darken1);
+                    col.Item().PaddingBottom(8);
+                });
+
+                page.Content().Column(col =>
+                {
+                    if (items.Count == 0)
+                    {
+                        col.Item().PaddingTop(20).AlignCenter()
+                            .Text("Lista vacía").FontSize(12).FontColor(Colors.Grey.Medium);
+                        return;
+                    }
+
+                    foreach (var grupo in porCategoria)
+                    {
+                        col.Item().PaddingTop(6).PaddingBottom(2)
+                            .Background(Colors.Green.Lighten4)
+                            .Padding(4)
+                            .Text(grupo.Key).Bold().FontSize(11).FontColor(Colors.Green.Darken3);
+
+                        foreach (var item in grupo.OrderBy(i => i.Nombre))
+                        {
+                            col.Item().Row(row =>
+                            {
+                                row.ConstantItem(18).AlignTop().Text("☐").FontSize(12);
+                                row.RelativeItem().Text(text =>
+                                {
+                                    text.Span(item.Nombre).FontSize(10);
+                                    if (!string.IsNullOrWhiteSpace(item.Cantidad))
+                                        text.Span($"  ·  {item.Cantidad}").FontSize(9).FontColor(Colors.Grey.Darken2);
+                                });
+                            });
+                        }
+                    }
+                });
+
+                page.Footer().AlignCenter()
+                    .Text(text =>
+                    {
+                        text.Span($"{items.Count} artículos · ").FontSize(7).FontColor(Colors.Grey.Medium);
+                        text.Span("Generado por EatHealthyCycle").FontSize(7).FontColor(Colors.Grey.Medium);
+                    });
+            });
+        });
+
+        return document.GeneratePdf();
+    }
 }

@@ -1,4 +1,4 @@
-const CACHE = 'eatcycle-v25';
+const CACHE = 'eatcycle-v26';
 const API_CACHE = 'eatcycle-api-v3';
 const SHELL = ['/', '/css/app.css', '/js/offline.js', '/js/api.js', '/js/app.js'];
 

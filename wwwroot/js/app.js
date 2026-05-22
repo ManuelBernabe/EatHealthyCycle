@@ -715,8 +715,9 @@ const App = {
                     <button class="btn btn-primary btn-sm" onclick="App.addItemCompra()" style="white-space:nowrap;">+</button>
                 </div>
             </div>
-            <div style="padding:8px 16px;">
+            <div style="padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="btn btn-outline btn-sm" onclick="App.regenerarCompra()">Regenerar lista</button>
+                <button class="btn btn-accent btn-sm" onclick="App.exportarCompraPdf()">Exportar PDF</button>
             </div>`;
 
         if (items.length === 0) {
@@ -783,6 +784,21 @@ const App = {
             const items = await API.generarListaCompra(this.currentPlanIdForCompra);
             this.renderCompra(items);
             this.toast('Lista regenerada');
+        } catch (e) { this.toast(e.message, 'error'); }
+    },
+
+    async exportarCompraPdf() {
+        if (!this.currentPlanIdForCompra) return;
+        try {
+            const blob = await API.exportarListaCompraPdf(this.currentPlanIdForCompra);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `lista-compra-${new Date().toISOString().slice(0, 10)}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (e) { this.toast(e.message, 'error'); }
     },
 
