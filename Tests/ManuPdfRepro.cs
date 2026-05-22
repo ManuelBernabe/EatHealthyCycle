@@ -89,5 +89,28 @@ public class ManuPdfReproTests
             Assert.False(todasSinAsignar,
                 $"{pd.DiaSemana} acabó completamente vacío — la dieta perdió ese día");
         }
+
+        // Las celdas COMIDA / MERIENDA / CENA del lunes (DIA DE PIERNA) son la prueba canónica
+        // del fix: la versión anterior metía proteína whey y agua mineral en COMIDA, y CHAMPIÑÓN
+        // en MERIENDA. Verificamos que cada item esté en el slot correcto.
+        var lunes = dieta.Dias.First(d => d.DiaSemana == DayOfWeek.Monday);
+        string ComidaAsText(TipoComida t) => string.Join(" | ",
+            lunes.Comidas.FirstOrDefault(c => c.Tipo == t)?.Alimentos
+                .Select(a => a.Nombre.ToUpperInvariant()) ?? Enumerable.Empty<string>());
+
+        var comidaText = ComidaAsText(TipoComida.Comida);
+        Assert.DoesNotContain("PROTE", comidaText);   // proteína whey pertenece a MERIENDA
+        Assert.DoesNotContain("AGUA MINERAL", comidaText);
+        Assert.DoesNotContain("NUEZ", comidaText);
+
+        var meriendaText = ComidaAsText(TipoComida.Merienda);
+        Assert.DoesNotContain("CHAMPI", meriendaText); // champiñón pertenece a CENA
+        Assert.DoesNotContain("BERBERECHO", meriendaText);
+        Assert.DoesNotContain("PECHUGA", meriendaText); // pechuga de pollo de la cena
+
+        var cenaText = ComidaAsText(TipoComida.Cena);
+        Assert.Contains("BERBERECHO", cenaText);
+        Assert.Contains("CHAMPI", cenaText);
     }
+
 }

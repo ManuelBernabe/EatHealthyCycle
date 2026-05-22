@@ -275,7 +275,6 @@ public class PdfImportService : IPdfImportService
 
         // Step 5: Define meal row boundaries
         var sortedMeals = mealLabels.OrderByDescending(m => m.yCenter).ToList();
-        var mealRows = new List<(TipoComida tipo, double yTop, double yBottom)>();
 
         // Calculate minimum spacing for bottom boundary heuristic
         double minMealSpacing = 150;
@@ -287,23 +286,18 @@ public class PdfImportService : IPdfImportService
             minMealSpacing = spacings.Min();
         }
 
-        // Meal labels sit at the TOP of each row in the diet table — content extends
-        // DOWN from the label until the next label. The old midpoint heuristic cut tall
-        // cells in half and pushed their bottom items into the next meal (DESAYUNO with
-        // 7 items leaking into ALMUERZO, etc.). Use "just above next label" instead so
-        // each meal owns the full vertical strip down to the next label's top edge.
-        const double labelBuffer = 8;
-        for (int i = 0; i < sortedMeals.Count; i++)
-        {
-            var yTop = i == 0
-                ? sortedMeals[i].yCenter + 50
-                : sortedMeals[i].yCenter + labelBuffer;
-            var yBottom = i + 1 < sortedMeals.Count
-                ? sortedMeals[i + 1].yCenter + labelBuffer
-                : Math.Max(0, sortedMeals[i].yCenter - minMealSpacing * 1.5);
-
-            mealRows.Add((sortedMeals[i].tipo, yTop, yBottom));
-        }
+        // Boundaries between meals are data-driven: find the largest Y gap between
+        // consecutive item lines in the strip between two labels and put the boundary
+        // there. This handles BOTH layouts seen in real RGANUTRI PDFs:
+        //   - Top-aligned labels in tall cells (e.g. DIETA_MANU_actualizada DESAYUNO
+        //     with 7 items): gap appears just above the next label.
+        //   - Vertically-centred labels (e.g. DIETA MANU 220526 COMIDA/MERIENDA/CENA
+        //     where items sit both above and below the label word): gap appears in
+        //     the empty strip between the previous cell's last item and this cell's
+        //     first item, NOT next to the label.
+        // If no clear gap is found, fall back to "next-label + buffer" which is safer
+        // for top-aligned layouts.
+        var mealRows = ComputeMealRowBoundaries(sortedMeals, allWords, dayColumns, minMealSpacing);
 
         // On continuation pages, merge orphaned words from previous page into the first meal
         if (previousOrphans != null && previousOrphans.Count > 0)
@@ -505,6 +499,98 @@ public class PdfImportService : IPdfImportService
         }
 
         return (dayColumns, newOrphans);
+    }
+
+    /// <summary>
+    /// Compute (yTop, yBottom) for each meal row using a data-driven boundary detection.
+    /// For each pair of consecutive labels we look at the items (in any day column) that
+    /// fall between the two label centres and place the boundary at the midpoint of the
+    /// LARGEST vertical gap between consecutive item lines. If the largest gap is too
+    /// small to be a real cell separator we fall back to "next label centre + buffer".
+    /// </summary>
+    private static List<(TipoComida tipo, double yTop, double yBottom)> ComputeMealRowBoundaries(
+        List<(TipoComida tipo, double yCenter, double xCenter)> sortedMeals,
+        List<Word> allWords,
+        List<(int diaNum, double contentLeft, double contentRight)> dayColumns,
+        double minMealSpacing)
+    {
+        var rows = new List<(TipoComida tipo, double yTop, double yBottom)>();
+        if (sortedMeals.Count == 0) return rows;
+
+        const double labelBuffer = 8;
+        // Absolute floor: a "gap" must be at least this many points to be considered
+        // a real cell separator. Below this it's just normal line spacing variation.
+        // Typical line spacing in these PDFs is ~12pt; 18pt = ~1.5x is a safe floor.
+        const double minGapForSeparator = 18;
+
+        // Build the list of boundary Y values: boundaries[0] = top of first cell,
+        // boundaries[i] for i in 1..N-1 = boundary BETWEEN meal i-1 and meal i,
+        // boundaries[N] = bottom of last cell.
+        var boundaries = new double[sortedMeals.Count + 1];
+        boundaries[0] = sortedMeals[0].yCenter + 50;
+        boundaries[^1] = Math.Max(0, sortedMeals[^1].yCenter - minMealSpacing * 1.5);
+
+        for (int i = 0; i < sortedMeals.Count - 1; i++)
+        {
+            var labelN = sortedMeals[i];
+            var labelNext = sortedMeals[i + 1];
+
+            // Collect distinct Y positions of NON-LABEL items in any day column,
+            // strictly between the two label centres.
+            var itemYs = allWords
+                .Where(w =>
+                {
+                    if (IsBulletWord(w)) return false;
+                    var wx = (w.BoundingBox.Left + w.BoundingBox.Right) / 2;
+                    var wy = (w.BoundingBox.Top + w.BoundingBox.Bottom) / 2;
+                    if (wy <= labelNext.yCenter || wy >= labelN.yCenter) return false;
+                    return dayColumns.Any(c => wx >= c.contentLeft && wx <= c.contentRight);
+                })
+                .Select(w => Math.Round((w.BoundingBox.Top + w.BoundingBox.Bottom) / 2, 0))
+                .Distinct()
+                .OrderByDescending(y => y)
+                .ToList();
+
+            double boundary = labelNext.yCenter + labelBuffer; // fallback
+            if (itemYs.Count >= 3)
+            {
+                var gaps = new List<double>();
+                for (int g = 0; g < itemYs.Count - 1; g++)
+                    gaps.Add(itemYs[g] - itemYs[g + 1]);
+
+                // Median line spacing is the typical inter-line distance within a cell.
+                // The cell separator is the largest gap, and it must be noticeably bigger
+                // than the typical line spacing — otherwise it's just a slightly larger
+                // line in a normal block of items.
+                var sortedGaps = gaps.OrderBy(g => g).ToList();
+                var median = sortedGaps[sortedGaps.Count / 2];
+
+                double maxGap = 0;
+                double gapMid = 0;
+                for (int g = 0; g < itemYs.Count - 1; g++)
+                {
+                    if (gaps[g] > maxGap)
+                    {
+                        maxGap = gaps[g];
+                        gapMid = (itemYs[g] + itemYs[g + 1]) / 2;
+                    }
+                }
+
+                // Accept the gap as the cell separator if it's BOTH:
+                //   - bigger than 1.5x the typical line spacing, AND
+                //   - at least minGapForSeparator absolute (avoids picking 18pt over 12pt
+                //     median for very dense cells where everything is one block).
+                if (maxGap > median * 1.5 && maxGap >= minGapForSeparator)
+                    boundary = gapMid;
+            }
+
+            boundaries[i + 1] = boundary;
+        }
+
+        for (int i = 0; i < sortedMeals.Count; i++)
+            rows.Add((sortedMeals[i].tipo, boundaries[i], boundaries[i + 1]));
+
+        return rows;
     }
 
     /// <summary>
