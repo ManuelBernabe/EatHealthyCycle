@@ -297,7 +297,7 @@ public class PdfImportService : IPdfImportService
         //     first item, NOT next to the label.
         // If no clear gap is found, fall back to "next-label + buffer" which is safer
         // for top-aligned layouts.
-        var mealRows = ComputeMealRowBoundaries(sortedMeals, allWords, dayColumns, minMealSpacing);
+        var mealRows = ComputeMealRowBoundaries(sortedMeals, allWords, dayColumns, minMealSpacing, page.Height);
 
         // On continuation pages, merge orphaned words from previous page into the first meal
         if (previousOrphans != null && previousOrphans.Count > 0)
@@ -512,22 +512,29 @@ public class PdfImportService : IPdfImportService
         List<(TipoComida tipo, double yCenter, double xCenter)> sortedMeals,
         List<Word> allWords,
         List<(int diaNum, double contentLeft, double contentRight)> dayColumns,
-        double minMealSpacing)
+        double minMealSpacing,
+        double pageHeight)
     {
         var rows = new List<(TipoComida tipo, double yTop, double yBottom)>();
         if (sortedMeals.Count == 0) return rows;
 
         const double labelBuffer = 8;
-        // Absolute floor: a "gap" must be at least this many points to be considered
-        // a real cell separator. Below this it's just normal line spacing variation.
-        // Typical line spacing in these PDFs is ~12pt; 18pt = ~1.5x is a safe floor.
-        const double minGapForSeparator = 18;
+        // Absolute floor: a gap must exceed this many points to be considered a real
+        // cell separator (vs normal line spacing variation). Typical line spacing in
+        // these PDFs is 11-13pt and cells are tightly packed in some pages (e.g.
+        // DIA 4 / DIETA MANU 220526 page 7, where the DESAYUNO→ALMUERZO gap is only
+        // 14pt). 13pt floor is permissive enough to catch tight separators while still
+        // safely above the 11-13pt within-cell spacing.
+        const double minGapForSeparator = 13.5;
 
-        // Build the list of boundary Y values: boundaries[0] = top of first cell,
-        // boundaries[i] for i in 1..N-1 = boundary BETWEEN meal i-1 and meal i,
-        // boundaries[N] = bottom of last cell.
+        // Build boundary Y values: boundaries[0] = top of first cell, boundaries[i]
+        // for i in 1..N-1 = boundary between meals i-1 and i, boundaries[N] = bottom
+        // of last cell. The first cell extends to the top of the page so any content
+        // above the first label (e.g. continuation-page items above the only label)
+        // is captured. Headers like DIA/INGESTA/INGREDIENTES that sit above on
+        // primary pages are filtered out as noise downstream.
         var boundaries = new double[sortedMeals.Count + 1];
-        boundaries[0] = sortedMeals[0].yCenter + 50;
+        boundaries[0] = pageHeight;
         boundaries[^1] = Math.Max(0, sortedMeals[^1].yCenter - minMealSpacing * 1.5);
 
         for (int i = 0; i < sortedMeals.Count - 1; i++)
@@ -554,33 +561,19 @@ public class PdfImportService : IPdfImportService
             double boundary = labelNext.yCenter + labelBuffer; // fallback
             if (itemYs.Count >= 3)
             {
-                var gaps = new List<double>();
-                for (int g = 0; g < itemYs.Count - 1; g++)
-                    gaps.Add(itemYs[g] - itemYs[g + 1]);
-
-                // Median line spacing is the typical inter-line distance within a cell.
-                // The cell separator is the largest gap, and it must be noticeably bigger
-                // than the typical line spacing — otherwise it's just a slightly larger
-                // line in a normal block of items.
-                var sortedGaps = gaps.OrderBy(g => g).ToList();
-                var median = sortedGaps[sortedGaps.Count / 2];
-
                 double maxGap = 0;
                 double gapMid = 0;
                 for (int g = 0; g < itemYs.Count - 1; g++)
                 {
-                    if (gaps[g] > maxGap)
+                    var gap = itemYs[g] - itemYs[g + 1];
+                    if (gap > maxGap)
                     {
-                        maxGap = gaps[g];
+                        maxGap = gap;
                         gapMid = (itemYs[g] + itemYs[g + 1]) / 2;
                     }
                 }
 
-                // Accept the gap as the cell separator if it's BOTH:
-                //   - bigger than 1.5x the typical line spacing, AND
-                //   - at least minGapForSeparator absolute (avoids picking 18pt over 12pt
-                //     median for very dense cells where everything is one block).
-                if (maxGap > median * 1.5 && maxGap >= minGapForSeparator)
+                if (maxGap >= minGapForSeparator)
                     boundary = gapMid;
             }
 
@@ -1133,6 +1126,13 @@ public class PdfImportService : IPdfImportService
         if (Regex.IsMatch(l, @"^entrenamiento\s+de\s+", RegexOptions.IgnoreCase)) return true;
         if (Regex.IsMatch(l, @"^dia\s+de\s+descanso$", RegexOptions.IgnoreCase)) return true;
         if (Regex.IsMatch(l, @"^d[ií]a\s+\d+$", RegexOptions.IgnoreCase)) return true;
+        // Column headers in RGANUTRI tables: "DIA DE PIERNA", "DIA 5 PIERNA",
+        // "SABADO DIA OFF", "DOMINGO DIA OFF" and bare-word fragments left when
+        // the parser sees only part of those headers.
+        if (Regex.IsMatch(l, @"^d[ií]a(\s+(de\s+)?pierna)?(\s+\d+(\s+pierna)?)?$", RegexOptions.IgnoreCase)) return true;
+        if (Regex.IsMatch(l, @"^(s[aá]bado|domingo)(\s+d[ií]a\s+off)?$", RegexOptions.IgnoreCase)) return true;
+        if (Regex.IsMatch(l, @"^d[ií]a\s+off$", RegexOptions.IgnoreCase)) return true;
+        if (Regex.IsMatch(l, @"^pierna$", RegexOptions.IgnoreCase)) return true;
 
         // Medication/supplement schedule noise
         if (l.Contains("masteron") || l.Contains("telmisartan") || l.Contains("ursobilane") ||

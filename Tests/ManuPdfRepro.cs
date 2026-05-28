@@ -111,6 +111,17 @@ public class ManuPdfReproTests
         var cenaText = ComidaAsText(TipoComida.Cena);
         Assert.Contains("BERBERECHO", cenaText);
         Assert.Contains("CHAMPI", cenaText);
+
+        // Jueves: la última versión perdía PROTEÍNA WHEY 40G del MERIENDA porque el primer
+        // label de la página de continuación tenía un yTop demasiado bajo.
+        var jueves = dieta.Dias.First(d => d.DiaSemana == DayOfWeek.Thursday);
+        string ComidaJueves(TipoComida t) => string.Join(" | ",
+            jueves.Comidas.FirstOrDefault(c => c.Tipo == t)?.Alimentos
+                .Select(a => a.Nombre.ToUpperInvariant()) ?? Enumerable.Empty<string>());
+        Assert.Contains("PROTE", ComidaJueves(TipoComida.Merienda));
+        // Jueves ALMUERZO debe tener PAN TOSTADO TRIGO; antes se perdía dentro de DESAYUNO
+        Assert.Contains("PAN TOSTADO", ComidaJueves(TipoComida.Almuerzo));
+        Assert.Contains("AT", ComidaJueves(TipoComida.Almuerzo)); // ATÚN
     }
 
 }
