@@ -76,6 +76,12 @@ public class PdfImportService : IPdfImportService
         var plainText = ExtractPlainText(allPages);
         ParseDiaOff(plainText, dieta);
 
+        // Repair items that the positional parser split across visual lines
+        // (e.g. "HUEVO DE" + "GALLINA TALLA M 4 UNIDADES", "MANZANA 1" + "UNIDAD").
+        foreach (var dia in dieta.Dias)
+            foreach (var comida in dia.Comidas)
+                NormalizeFoodFragments(comida);
+
         _logger.LogInformation("Diet parsed: {Days} days, {Meals} total meals",
             dieta.Dias.Count,
             dieta.Dias.Sum(d => d.Comidas.Count));
@@ -413,7 +419,7 @@ public class PdfImportService : IPdfImportService
                     nombre = CleanText(nombre).Trim();
                     if (string.IsNullOrWhiteSpace(nombre) || nombre.Length < 2) continue;
                     // Skip noise that got through earlier filters
-                    if (IsNoiseLine(nombre)) continue;
+                    if (IsCellNoise(nombre)) continue;
 
                     if (!existingComida.Alimentos.Any(a =>
                         CleanText(a.Nombre).Equals(nombre, StringComparison.OrdinalIgnoreCase)))
@@ -634,7 +640,7 @@ public class PdfImportService : IPdfImportService
             var lineText = string.Join(" ", cleanedParts).Trim();
 
             if (string.IsNullOrWhiteSpace(lineText) || lineText.Length < 2) continue;
-            if (IsNoiseLine(lineText) || IsMealTypeHeader(lineText)) continue;
+            if (IsCellNoise(lineText) || IsMealTypeHeader(lineText)) continue;
 
             cleanLines.Add((lineText, startsWithBullet));
         }
@@ -650,7 +656,7 @@ public class PdfImportService : IPdfImportService
                 if (hasBullet && currentItemParts.Count > 0)
                 {
                     var itemText = string.Join(" ", currentItemParts);
-                    if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                    if (!IsCellNoise(itemText) && !IsMealTypeHeader(itemText))
                         foodItems.Add(StripMealTypeFromFood(itemText));
                     currentItemParts.Clear();
                 }
@@ -659,7 +665,7 @@ public class PdfImportService : IPdfImportService
             if (currentItemParts.Count > 0)
             {
                 var itemText = string.Join(" ", currentItemParts);
-                if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                if (!IsCellNoise(itemText) && !IsMealTypeHeader(itemText))
                     foodItems.Add(StripMealTypeFromFood(itemText));
             }
         }
@@ -679,7 +685,7 @@ public class PdfImportService : IPdfImportService
                 if (currentItemParts.Count > 0 && !prevEndsWithPreposition && LooksLikeNewFoodItem(lineText))
                 {
                     var itemText = string.Join(" ", currentItemParts);
-                    if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                    if (!IsCellNoise(itemText) && !IsMealTypeHeader(itemText))
                         foodItems.Add(StripMealTypeFromFood(itemText));
                     currentItemParts.Clear();
                 }
@@ -688,7 +694,7 @@ public class PdfImportService : IPdfImportService
             if (currentItemParts.Count > 0)
             {
                 var itemText = string.Join(" ", currentItemParts);
-                if (!IsNoiseLine(itemText) && !IsMealTypeHeader(itemText))
+                if (!IsCellNoise(itemText) && !IsMealTypeHeader(itemText))
                     foodItems.Add(StripMealTypeFromFood(itemText));
             }
         }
@@ -937,16 +943,33 @@ public class PdfImportService : IPdfImportService
 
         Comida? comidaActual = null;
         int orden = 0;
+        var buffer = new StringBuilder();
+
+        // The "+"-separated food list of one meal can wrap across several visual lines
+        // ("…jamón" / "serrano 60g"). Buffer every line of a meal and only parse on the
+        // next meal header (or at the end) so wrapped items are split on "+", not on newlines.
+        void FlushBuffer()
+        {
+            if (comidaActual != null && buffer.Length > 0)
+                ParseDiaOffFoodLine(comidaActual, buffer.ToString());
+            buffer.Clear();
+        }
 
         foreach (var rawLine in lines.Skip(1))
         {
             var line = rawLine.Trim();
             if (string.IsNullOrWhiteSpace(line)) continue;
-            if (Regex.IsMatch(line, @"suplementaci[oó]n", RegexOptions.IgnoreCase)) break;
+            if (Regex.IsMatch(line, @"suplementaci[oó]n", RegexOptions.IgnoreCase))
+            {
+                FlushBuffer();
+                break;
+            }
 
             var mealMatch = Regex.Match(line, @"^-?\s*(desayuno|almuerzo|comida|merienda|cena)\s*:\s*(.*)$", RegexOptions.IgnoreCase);
             if (mealMatch.Success)
             {
+                FlushBuffer();
+
                 var tipoStr = mealMatch.Groups[1].Value.ToLowerInvariant();
                 var tipo = tipoStr switch
                 {
@@ -963,13 +986,17 @@ public class PdfImportService : IPdfImportService
 
                 var resto = mealMatch.Groups[2].Value.Trim();
                 if (!string.IsNullOrWhiteSpace(resto))
-                    ParseDiaOffFoodLine(comidaActual, resto);
+                    buffer.Append(resto);
                 continue;
             }
 
-            if (comidaActual != null && !string.IsNullOrWhiteSpace(line))
-                ParseDiaOffFoodLine(comidaActual, line);
+            if (comidaActual != null)
+            {
+                if (buffer.Length > 0) buffer.Append(' ');
+                buffer.Append(line);
+            }
         }
+        FlushBuffer();
 
         // "Cena: IGUAL A LOS DÍAS DE ACTIVIDAD FÍSICA"
         var cena = diaOff.Comidas.FirstOrDefault(c => c.Tipo == TipoComida.Cena);
@@ -1114,6 +1141,120 @@ public class PdfImportService : IPdfImportService
     }
 
     // ==================== NOISE FILTERS ====================
+
+    /// <summary>
+    /// Lighter noise filter for lines/items found INSIDE a meal cell. A cell is already
+    /// bounded to one day column and one meal row, so structural noise (table headers,
+    /// branding, day labels, supplement schedules) is the only thing that can leak in.
+    /// Unlike <see cref="IsNoiseLine"/> this intentionally does NOT drop:
+    ///   - bare quantity lines ("200G", "100G", "1G", "4 UNIDADES") — these are a food
+    ///     item's quantity wrapped onto its own visual line, not noise.
+    ///   - size specs ("TALLA M 4") — "TALLA" is an anthropometric-table header word, but
+    ///     inside a cell it is part of "HUEVO DE GALLINA TALLA M 4 UNIDADES".
+    /// Dropping those caused lost quantities and truncated food names.
+    /// </summary>
+    private static bool IsCellNoise(string linea)
+    {
+        var l = linea.Trim().ToLowerInvariant();
+        if (l.Length < 2) return true;
+        if (l == "pre") return true;
+        // Structural / branding headers. NOTE: anthropometric-table header words
+        // (fecha, cita, peso, TALLA, perfil, espalda, manu) are matched FULL-WORD only
+        // here — "TALLA M 4" inside "HUEVO DE GALLINA TALLA M 4 UNIDADES" must survive.
+        if (Regex.IsMatch(l, @"^(ingesta|ingredientes|rganutri|plan\s+nutricional|cuestionario|gasto\s+energ|necesidades\s+h[ií]dricas|datos\s+antropom|check\s+inicial)\b"))
+            return true;
+        if (Regex.IsMatch(l, @"^(fecha|cita|peso|talla|perfil|espalda|manu)$")) return true;
+        if (Regex.IsMatch(l, @"^[\d\.\…]+$") && !Regex.IsMatch(l, @"\d")) return true; // pure dot leaders
+        // Day / column header fragments
+        if (Regex.IsMatch(l, @"^d[ií]a(\s+(de\s+)?pierna)?(\s+\d+(\s+pierna)?)?$")) return true;
+        if (Regex.IsMatch(l, @"^(s[aá]bado|domingo)(\s+d[ií]a\s+off)?$")) return true;
+        if (Regex.IsMatch(l, @"^d[ií]a\s+off$")) return true;
+        if (Regex.IsMatch(l, @"^d[ií]a\s+de\s+descanso$")) return true;
+        if (Regex.IsMatch(l, @"^pierna$")) return true;
+        if (Regex.IsMatch(l, @"^entrenamiento\s+de\s+")) return true;
+        // Medication / supplement schedule noise
+        if (l.Contains("masteron") || l.Contains("telmisartan") || l.Contains("ursobilane") ||
+            l.Contains("cipionato") || l.Contains("capsula") || l.Contains("1ml") ||
+            l.Contains("enantate") || l.Contains("vitamina c") || l.Contains("omega 3"))
+            return true;
+        // Día off / supplement section prose
+        if (l.Contains("día off") || l.Contains("dia off") || l.Contains("no entreno") ||
+            l.Contains("igual a los") || l.Contains("actividad fís") || l.Contains("actividad fis") ||
+            l.Contains("actividada") ||
+            l.Contains("suplementación") || l.Contains("suplementacion") ||
+            l.Contains("de dormir"))
+            return true;
+        // Parenthesised dosages "(300mg)" / "(1G)" and bare mg/mcg dosages — but NOT bare
+        // food quantities like "200G", "300ML", "1G" which are an item's wrapped quantity.
+        if (Regex.IsMatch(l, @"^\(\d+\s*(mg|g|gr|ml|l|mcg)\)$")) return true;
+        if (Regex.IsMatch(l, @"^\d+\s*(mg|mcg)$")) return true;
+        // Standalone prepositions / articles that got orphaned
+        if (l.Length <= 3 && Prepositions.Contains(l)) return true;
+        // Día off plain-text meal directives ("-Cena: LIBRE", "-Desayuno: …")
+        if (Regex.IsMatch(l, @"^-?\s*nac\b")) return true;
+        if (Regex.IsMatch(l, @"^-?\s*(desayuno|almuerzo|comida|merienda|cena|tentempi[eé])\s*:")) return true;
+        if (Regex.IsMatch(l, @"^-\s*(desayuno|almuerzo|comida|merienda|cena|tentempi[eé])\b")) return true;
+        // Long mixed blobs and "+"-joined supplement combinations
+        if (l.Length > 60) return true;
+        if (l.Contains("+") && !Regex.IsMatch(l, @"^\d")) return true;
+        return false;
+    }
+
+    private static readonly Regex PureUnitTailRegex = new(
+        @"^\(?\d*\s*(g|gr|grs|kg|mg|ml|l|cl|unidad|unidades|ud|uds|rodaja|rodajas|rebanada|rebanadas|loncha|lonchas|lata|latas|taza|tazas|cucharada|cucharadas|cucharadita|cucharaditas|vaso|vasos|pieza|piezas|puñado|puñados)\)?$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Repair food items that the positional parser fragmented across visual lines.
+    /// Merges a consecutive food item into the previous one when it is clearly a
+    /// continuation rather than a distinct ingredient:
+    ///   - previous ends with a dangling connector ("HUEVO DE" + "GALLINA…")
+    ///   - current starts with a connector ("PIÑA ENLATADA" + "EN SU JUGO 2")
+    ///   - current is a bare unit/quantity tail ("MANZANA 1" + "UNIDAD", "+ 200G")
+    ///   - current is a size spec continuation ("…GALLINA" + "TALLA M 4")
+    /// These rules never fire between two genuinely distinct ingredients because real
+    /// food names neither end with a bare preposition nor consist solely of a unit word.
+    /// </summary>
+    private static void NormalizeFoodFragments(Comida comida)
+    {
+        if (comida.Alimentos.Count < 2) return;
+
+        var merged = new List<Alimento>();
+        foreach (var cur in comida.Alimentos)
+        {
+            if (merged.Count > 0 && ShouldMergeFragment(merged[^1], cur))
+            {
+                var prev = merged[^1];
+                var prevText = (prev.Nombre + " " + (prev.Cantidad ?? "")).Trim();
+                var curText = (cur.Nombre + " " + (cur.Cantidad ?? "")).Trim();
+                var (n, c) = ParseAlimento((prevText + " " + curText).Trim());
+                prev.Nombre = CleanText(n).Trim();
+                prev.Cantidad = string.IsNullOrWhiteSpace(c) ? null : c.Trim();
+                continue;
+            }
+            merged.Add(cur);
+        }
+
+        comida.Alimentos = merged;
+    }
+
+    private static bool ShouldMergeFragment(Alimento prev, Alimento cur)
+    {
+        var prevWords = prev.Nombre.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var curFull = (cur.Nombre + " " + (cur.Cantidad ?? "")).Trim();
+        var curWords = curFull.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (prevWords.Length == 0 || curWords.Length == 0) return false;
+
+        // a) previous item ends with a dangling connector ("ACEITE DE", "HUEVO DE")
+        if (Prepositions.Contains(prevWords[^1])) return true;
+        // b) current item starts with a connector ("EN SU JUGO 2", "DE OLIVA")
+        if (Prepositions.Contains(curWords[0])) return true;
+        // c) current item is only a quantity / unit ("UNIDAD", "4 UNIDADES", "200G")
+        if (PureUnitTailRegex.IsMatch(curFull)) return true;
+        // d) current item is a size-spec continuation ("TALLA M 4")
+        if (Regex.IsMatch(curFull, @"^talla\b", RegexOptions.IgnoreCase)) return true;
+        return false;
+    }
 
     private static bool IsNoiseLine(string linea)
     {

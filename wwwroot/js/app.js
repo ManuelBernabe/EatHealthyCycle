@@ -353,6 +353,9 @@ const App = {
             const plan = await API.obtenerPlan(selectedPlan.id);
             this.currentPlan = plan;
             this.allPlanes = planes;
+            // Abrir directamente en el día de hoy si está dentro de la semana del plan
+            const todayIdx = this.findTodayIndex(plan);
+            this.currentDayIndex = todayIdx >= 0 ? todayIdx : 0;
             this.renderPlan(plan);
         } catch (e) { this.toast(e.message, 'error'); }
     },
@@ -512,7 +515,22 @@ const App = {
             const newTabs = document.querySelector('.day-tabs');
             if (newTabs) newTabs.scrollLeft = tabsScroll;
             window.scrollTo(0, pageScroll);
+        } else {
+            // Carga nueva: asegurar que la pestaña del día activo quede visible
+            const activeTab = document.querySelector('.day-tab.active');
+            if (activeTab) activeTab.scrollIntoView({ inline: 'center', block: 'nearest' });
         }
+    },
+
+    // Índice del día del plan que corresponde a la fecha de hoy (-1 si hoy cae fuera del plan)
+    findTodayIndex(plan) {
+        if (!plan || !plan.dias || plan.dias.length === 0) return -1;
+        const now = new Date();
+        const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+        return plan.dias.findIndex(dia => {
+            const f = new Date(dia.fecha);
+            return f.getFullYear() === y && f.getMonth() === m && f.getDate() === d;
+        });
     },
 
     selectDay(index) {
